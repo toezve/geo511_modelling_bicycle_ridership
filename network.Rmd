@@ -1,0 +1,1013 @@
+---
+title: "network"
+output: html_document
+date: "2023-01-31"
+---
+# load packages
+```{r}
+
+
+library(sp)
+# install.packages("sf", repos = "https://r-spatial.r-universe.dev")
+library(sf)
+library(tmap)
+library(leaflet)
+library(igraph)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(sfnetworks)
+library(tidygraph)
+library(progress)
+library(data.table)
+library(ggplot2)
+library(tidyverse)
+
+```
+
+# visualise the corrected edges 
+```{r}
+
+av_network_median <- av_network_corrected_0510 %>% group_by(OBJECTI) %>% summarise(median = median(crr_trp, na.rm = TRUE))
+av_network_median1 <- right_join(av_network_median, as.data.frame(av_network_corrected_0510 %>% dplyr:: select(OBJECTI, corrctn) %>% st_drop_geometry()), by= "OBJECTI")
+av_network_median1 <- av_network_median1 %>% st_drop_geometry()
+av_network_median1 <- av_network_median1 %>% group_by(OBJECTI,median, corrctn) %>% summarise()
+
+
+# Filter the corrected edges
+corrected_edges_med <- av_network_median1 %>% dplyr::filter(corrctn == "yes")
+median_corr <- median(corrected_edges_med$median, na.rm = TRUE)
+non_corrected_edges_med <- av_network_median1 %>% dplyr::filter(is.na(corrctn)) 
+median_non_corr <- median(non_corrected_edges_med$median, na.rm = TRUE)
+
+
+
+# Create plot with count distribution and median lines
+plot_corrections_median <-ggplot(av_network_median1, aes(x = median)) +
+  geom_histogram(binwidth = 100, color = "black", fill = "grey", alpha = 0.5) +
+  geom_vline(aes(xintercept = median_non_corr, color = "Uncorrected"), linetype = "dashed", lwd = 1) +
+  geom_vline(aes(xintercept = median_corr, color = "Corrected"), linetype = "dashed", lwd = 1) +
+  labs(x = "Count", y = "Frequency") +
+  scale_color_manual(
+    values = c(Uncorrected = "red", Corrected = "blue"),
+    guide = guide_legend(title = "Median"),  breaks = c("Uncorrected", "Corrected"),
+    labels = c("Uncorrected", "Corrected"))+ 
+  theme_minimal() +
+  theme(legend.position = "bottom", 
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),panel.grid.minor = element_blank(),
+        legend.text = element_text(size = 10)) + coord_cartesian(xlim = c(0, 3500)) + ggtitle("Distribution of Strava Counts: Corrections")
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\plot_corrections_median.tiff",plot =plot_corrections_median, device = "tiff", width = 8, height = 6)
+
+
+
+av_network_corrected_0510 %>% dplyr::filter(month == "2021-01-01") #figure to compare in text
+
+theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),panel.grid.minor = element_blank())
+
+
+```
+
+
+
+
+# LAST STEP: reading the externally (on Linux server) processed, corrected edges
+```{r}
+av_network_corrected_0418 <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\av_network_corr.shp")
+
+av_network_forest_del <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\forest_del.shp")
+
+av_network_forest_del <- right_join(av_network_corrected_0418,as.data.frame(av_network_forest_del %>% select(OBJECTI, forest_del)), by= "OBJECTI")
+
+av_network_corrected_0510 <- anti_join(av_network_corrected_0418, as.data.frame(av_network_forest_del), by= "OBJECTI")
+
+# av_network_corrected_0510 <- av_network_corrected_0510 %>% dplyr::select(-trips, -cmmt_pr)
+# av_network_corrected_0510 <- av_network_corrected_0510 %>% dplyr::rename(trips_strava = crr_trp)
+
+```
+
+# POST PROCESS: calculations after network matching on Linux server. Grouping, summarising, export
+```{r}
+
+final01 <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\final01.shp")
+
+final02 <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\final02.shp")
+
+final03 <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\final03.shp")
+
+final04 <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\final04.shp")
+
+final <- rbind.data.frame(final01, final02, final03, final04)
+
+AVNetz_try <- select(AVnetz, 1,2,3,14,19,20)
+AVNetz_try <- right_join(AVNetz_try, as.data.frame(final), by = c("OBJECTID" = "OBJECTI"))
+
+# AVNetztry_grouped <- AVNetz_try %>% group_by(OBJECTID, month) %>% summarise(
+#   trips= sum(ttl_tr_),
+#   commute_perc = mean(cmmt_pr))
+
+test <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\AVnetz_res_gree_dist.shp")
+
+
+AVNetztry_grouped <- AVNetz_try %>% filter(month == "2021-04-01") %>% group_by(OBJECTID, month) %>% summarise(
+  trips= sum(ttl_tr_),
+  commute_perc = mean(cmmt_pr))
+
+
+    st_write(AVNetztry_grouped, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\AVnetz_0922gr_unedit.shp", append =  FALSE)
+
+# st_write(AVNetz_try, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\AVnetz_try.shp")
+
+final01_mean <- final01 %>% group_by(OBJECTI, edgeUID) %>% summarise(
+  trips = mean(ttl_tr_),
+  commute_perc = mean(cmmt_pr))
+
+
+final01_mean <- final01_mean %>% group_by(OBJECTI) %>% summarise(
+  trips= sum(trips),
+  commute_perc = mean(commute_perc)
+)
+
+st_write(final01_mean,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\final01mean.shp")
+ 
+```
+
+# POST PROCESS: try the loop for correction
+```{r}
+
+
+
+avnetz_ref <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\output09_22_corrected.shp")
+
+
+
+corr_try <- AVNetztry_grouped
+
+corr_try <- right_join(corr_try,as.data.frame(avnetz_ref), by= c("OBJECTID"= "OBJECTI"))
+
+corr_try[corr_try$OBJECTID == 99999, "trips"] <- 0
+corr_try[corr_try$OBJECTID == 99999, "commute_perc"] <- 0
+corr_try[corr_try$OBJECTID == 100000, "ref_obj_ID"] <- 20263
+# testversion
+april_test <- ymd("2022-04-01")
+corr_try[corr_try$OBJECTID >= 100000 & corr_try$OBJECTID <= 100030, "month"] <- april_test
+corr_try[corr_try$OBJECTID == 99999, "month"] <- april_test
+corr_try[corr_try$OBJECTID == 99999, "ref_obj_ID"] <- 99999
+
+
+# Create new columns for corrected trips and commute percentage
+corr_try$corr_trips <- NA
+corr_try$corr_cmmt <- NA
+
+# Loop through each row in the data frame (VARIANTE 1, works)
+for (i in 1:nrow(corr_try)) {
+  # Get the OBJECTID, ref_obj_ID, and month for the current row
+  obj_id <- corr_try[["OBJECTID"]][i]
+  ref_obj_id <- corr_try[["ref_obj_ID"]][i]
+  month <- corr_try[["month"]][i]
+
+  # Check if OBJECTID matches ref_obj_ID
+  if (identical(obj_id, ref_obj_id)) {
+    # Copy trips and cmmt_pr values to corrected columns
+    corr_try[i, "corr_trips"] <- corr_try[i, "trips"]
+    corr_try[i, "corr_cmmt"] <- corr_try[i, "commute_perc"]
+  } else {
+    # Find the corrected edge with matching ref_obj_ID and month
+    ref_obj_id <- as.numeric(ref_obj_id)
+    # corr_edge <- filter(corr_try, OBJECTID == ref_obj_id, month == month)
+    # Create a logical column indicating whether OBJECTID matches ref_obj_id
+corr_edge <- corr_try %>% mutate(match = OBJECTID == ref_obj_id)
+
+# Filter the rows where match is TRUE
+corr_edge <- filter(corr_edge, match == TRUE, month == month)
+    
+    # Copy trips and cmmt_pr values from corrected edge to corrected columns
+    if (nrow(corr_edge) > 0) {
+      corr_try[i, "corr_trips"] <- corr_edge$trips
+      corr_try[i, "corr_cmmt"] <- corr_edge$commute_perc
+    }
+  }
+}
+
+
+```
+
+
+# Creating the network: full workflow for Schlieren 06/2022
+```{r}
+
+strava_geo <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Strava\\selected_area_monthly_jan_2021-dec_2022_ride\\5b1a45d474a4b7dec98e59b73b6fbdae33278c8d45e0ecfbd0d6f22b0b788c00-1678723770243.shp")
+strava_csv0622 <- read.csv("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Strava\\selected_area_monthly_jan_2021-dec_2022_ride\\5b1a45d474a4b7dec98e59b73b6fbdae33278c8d45e0ecfbd0d6f22b0b788c00-1678723770243.csv") 
+
+kt_av_try <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\KTZH_AV_Netz\\AV_Achsen_shp\\AV_Achsen_shp\\AV_Achsen_KTZH_230127.shp")
+
+av_midpoints <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\KTZH_AV_Netz\\points\\points.shp")
+av_midpoints <- av_midpoints %>% dplyr::select(OBJECTID, geometry)
+
+num_rec <- c(xmin =8.456334,ymin= 47.3938377,xmax= 8.4798221,ymax= 47.4058884)
+num_rec <- c(xmin =8.4693208  ,ymin= 47.397608 ,xmax= 8.4919102  ,ymax= 47.4060122)
+strava_geowgs <- st_transform(strava_geo, crs = 4326)
+subset_strava_geo <- st_crop(strava_geowgs, num_rec) %>% st_transform(crs = 2056)
+# with counts
+subset_strava_geo <- inner_join(subset_strava_geo, strava_csv0622, by=c("edgeUID"="edge_uid"))
+subset_strava_geo <- subset_strava_geo %>% mutate(azimuth = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+
+subset_strava_geo <- subset_strava_geo %>% mutate(commute_trips = forward_commute_trip_count+reverse_commute_trip_count)
+subset_strava_geo <- subset_strava_geo %>% mutate(leisure_trips = forward_leisure_trip_count+reverse_leisure_trip_count)
+subset_strava_geo <- subset_strava_geo %>% mutate(month = lubridate::ym(month))%>% group_by(edgeUID,osmId, azimuth,month) %>% 
+  summarize(total_trip_count = sum(total_trip_count),
+            leisure_trips = sum(leisure_trips),
+            commute_trips = sum(commute_trips))
+
+subset_strava_geo <- subset_strava_geo %>% mutate(commute_perc = (commute_trips/(commute_trips+leisure_trips)*100))
+
+kt_av_try <- st_transform(kt_av_try, crs = 4326)
+
+subset_av <- st_crop(kt_av_try, num_rec) %>% st_transform(crs = 2056)
+subset_midpoints <- st_transform(av_midpoints, crs= 4326) %>% st_crop(y = num_rec) %>% st_transform(crs = 2056)
+# azimuth
+subset_av <- subset_av %>% mutate(azimuth_av = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+
+multi <- subset_av %>% filter(st_is(st_geometry(subset_av),"MULTILINESTRING"))
+
+subset_av <- subset_av %>% st_cast("LINESTRING")
+
+
+# start processing
+
+subset_strava_geo_clean <- subset_strava_geo %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+subset_strava_geo_cleanJ <- st_join(subset_av,subset_strava_geo_clean, join= st_intersects)
+
+subset_strava_geo_clean_try <- inner_join(subset_strava_geo,as.data.frame(subset_strava_geo_cleanJ),by= c("edgeUID", "osmId", "month"))
+subset_strava_geo_clean_try <- subset_strava_geo_clean_try %>% dplyr::select(edgeUID,OBJECTID,total_trip_count.x,month, GEMEINDENA,TEXT,osmId,azimuth_av,azimuth.x, geometry.x)
+
+st_geometry(subset_strava_geo_clean_try) <- "geometry.x"
+  
+
+
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_try %>% group_by(edgeUID,OBJECTID,month) %>% filter(abs(azimuth_av - azimuth.x) <= 20 |
+         abs(azimuth_av - azimuth.x + 180)<= 20 |
+         abs(azimuth_av - azimuth.x - 180)<= 20 |
+         abs(azimuth_av - azimuth.x - 360) <= 20 |
+         abs(azimuth_av - azimuth.x + 360) <= 20)
+        
+
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID) %>% summarise()
+
+
+subset_strava_geo_clean_tryG <- st_cast(subset_strava_geo_clean_tryF, "LINESTRING")
+
+subset_strava_network <- as_sfnetwork(subset_strava_geo_clean_tryG, directed = FALSE)
+# define middle value function
+middle_value <- list(edgeUID = function(x) {
+  n <- length(x)
+  if (n %% 2 == 0) {
+    middle <- n %/% 2
+    if (runif(1) > 0.5) {
+      return(x[middle])
+    } else {
+      return(x[middle + 1])
+    }
+  } else {
+    return(x[(n+1) %/% 2])
+  }
+})
+
+# smooth pseudo nodes
+subset_strava_network_smooth = convert(subset_strava_network, to_spatial_smooth, store_original_data = FALSE, require_equal= FALSE, summarise_attributes= middle_value)
+
+sub_edges_first <- subset_strava_network %>% activate("edges") %>% st_as_sf()
+sub_edges <- subset_strava_network_smooth %>% activate("edges") %>% st_as_sf()
+
+# V3: strava preprocessing vor st_join
+
+p_rejoin <- inner_join(sub_edges, as.data.frame(subset_strava_geo), by= "edgeUID")
+
+# st_write(p_rejoin %>% dplyr::select(edgeUID,total_trip_count.x,commute_perc.x,date.x ,osmId,azimuth), "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\network_assessment\\p_rejoin.shp",append = FALSE)
+
+
+#-------------
+p_subset_strava_p <- p_rejoin %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+
+p_subsets_join <- st_join(subset_midpoints,p_subset_strava_p,join = st_intersects)
+
+str(p_subset_av)
+
+p_subset_av <- inner_join(subset_av, as.data.frame(p_subsets_join), by = "OBJECTID")
+p_subset_av <- p_subset_av %>% dplyr::select(OBJECTID,total_trip_count,commute_perc,month,edgeUID, GEMEINDENA,TEXT,osmId,azimuth_av,azimuth)
+p_subset_av <- p_subset_av %>% filter(!is.na(total_trip_count))
+
+st_write(p_subset_av,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\network_assessment\\p_subset_av.shp")
+
+p_subset_av_06_22 <- p_subset_av  %>% filter(month == "2022-06-01") %>% group_by(OBJECTID,month) %>% summarise(
+ trips = sum(total_trip_count),                                                               commute= median(commute_perc))
+
+
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+    tm_shape(subset_strava_geo) + tm_lines(col = "purple", lwd = 1.3)+
+  tm_shape(p_subset_strava_p) + tm_polygons(alpha = 0.05, border.col = "blue")+
+   tm_shape(p_subset_av_06_22) + tm_lines(col = "trips", lwd = 3.3) +
+tm_shape(midpoints) + tm_dots(col = "blue", size = 0.05)
+
+  tm_shape(p_rejoin) + tm_lines(col = "trips", palette = "YlOrRd", style = "jenks", lwd = 6) + tm_shape(p_nodes_p) +tm_polygons(col = "purple", alpha = 0.2)+   
+tm_shape(st_centroid(subset_av)) + tm_dots(col = "darkgreen", size = 0.05) 
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+    tm_shape(subset_strava_geo) + tm_lines(col = "purple", lwd = 1.3)
+  
+  
+# tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+# tm_shape(st_buffer(subset_strava_geo2,dist=5)) + tm_polygons(alpha = 0.1, border.col = "blue")+
+# tm_shape(midpints) + tm_dots(col = "blue", size = 0.05)
+ 
+```
+
+
+```{r}
+strava_try <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Strava\\selected_area_daily_2021-09-01-2021-09-30_ride\\a1a389a6f4294e6cdeed1b95f80b8a6704f94fbc70889353b63300177bd5a9bd-1665410817609.shp")
+strava_csv_try <- read.csv("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Strava\\selected_area_daily_2021-09-01-2021-09-30_ride\\a1a389a6f4294e6cdeed1b95f80b8a6704f94fbc70889353b63300177bd5a9bd-1665410817609.csv")
+
+tlm_try <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\TLM_STRASSEN\\tlm_clip_no_z.shp")
+
+kt_av_try <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\KTZH_AV_Netz\\AV_Achsen_shp\\AV_Achsen_shp\\AV_Achsen_KTZH_230127.shp")
+
+```
+
+# Strava files pre processing
+```{r}
+#Create polygon geometry of rectangle
+# rectangle_list <- list(rbind(c(8.456334,47.4058884), c(8.456334,47.3938377), c(8.4798221,47.4058884), c(8.4798221,47.3938377),c(8.456334,47.4058884)))
+num_rec <- c(xmin =8.456334,ymin= 47.3938377,xmax= 8.4798221,ymax= 47.4058884)
+num_rec2 <-c(xmin = 8.5303111 , ymin= 47.3842784, xmax= 8.5367822, ymax=47.3887347)
+num_rec3 <- c(xmin = 8.538  , ymin= 47.3909283, xmax= 8.5463995 , ymax=47.3961601)
+
+# rectangle <- st_as_sf(st_sfc(st_polygon(rectangle_list)), crs = 2056)
+# rectangle <- st_polygon(rectangle_list)
+strava_geowgs <- st_transform(strava_geo, crs = 4326)
+
+#Select the points which intersect with the rectangle
+subset_strava_geo <- st_crop(strava_geowgs, num_rec) %>% st_transform(crs = 2056)
+
+subset_strava_geo2 <- st_crop(strava_geowgs, num_rec2) %>% st_transform(crs = 2056)
+
+subset_strava_geo3 <- st_crop(strava_geowgs, num_rec3) %>% st_transform(crs = 2056)
+
+
+
+# with counts
+subset_strava_geo <- inner_join(subset_strava_geo, strava_csv_try, by=c("edgeUID"="edge_uid"))
+subset_strava_geo <- subset_strava_geo %>% mutate(azimuth = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+
+subset_strava_geo <- subset_strava_geo %>% mutate(commute_trips = forward_commute_trip_count+reverse_commute_trip_count)
+subset_strava_geo <- subset_strava_geo %>% mutate(leisure_trips = forward_leisure_trip_count+reverse_leisure_trip_count)
+subset_strava_geo <- subset_strava_geo %>% mutate(date = lubridate::ymd(date))%>% group_by(edgeUID,osmId, azimuth,date = floor_date(date, "month")) %>% 
+  summarize(total_trip_count = sum(total_trip_count),
+            leisure_trips = sum(leisure_trips),
+            commute_trips = sum(commute_trips))
+
+subset_strava_geo <- subset_strava_geo %>% mutate(commute_perc = (commute_trips/(commute_trips+leisure_trips)*100))
+
+
+subset_strava_geo2 <- inner_join(subset_strava_geo2, strava_csv_try, by=c("edgeUID"="edge_uid"))
+subset_strava_geo2 <- subset_strava_geo2 %>% mutate(azimuth = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+
+
+subset_strava_geo2 <- subset_strava_geo2 %>% mutate(commute_trips = forward_commute_trip_count+reverse_commute_trip_count)
+subset_strava_geo2 <- subset_strava_geo2 %>% mutate(leisure_trips = forward_leisure_trip_count+reverse_leisure_trip_count)
+subset_strava_geo2 <- subset_strava_geo2 %>% mutate(date = lubridate::ymd(date))%>% group_by(edgeUID,osmId, azimuth,date = floor_date(date, "month")) %>% 
+  summarize(total_trip_count = sum(total_trip_count),
+            leisure_trips = sum(leisure_trips),
+            commute_trips = sum(commute_trips))
+
+subset_strava_geo2 <- subset_strava_geo2 %>% mutate(commute_perc = (commute_trips/(commute_trips+leisure_trips)*100))
+
+
+subset_strava_geo3 <- subset_strava_geo3 %>% mutate(azimuth = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+subset_strava_geo3 <- inner_join(subset_strava_geo3, strava_csv_try, by=c("edgeUID"="edge_uid"))
+
+subset_strava_geo3 <- subset_strava_geo3 %>% mutate(commute_trips = forward_commute_trip_count+reverse_commute_trip_count)
+subset_strava_geo3 <- subset_strava_geo3 %>% mutate(leisure_trips = forward_leisure_trip_count+reverse_leisure_trip_count)
+subset_strava_geo3 <- subset_strava_geo3 %>% mutate(date = lubridate::ymd(date))%>% group_by(edgeUID,osmId, azimuth,date = floor_date(date, "month")) %>% 
+  summarize(total_trip_count = sum(total_trip_count),
+            leisure_trips = sum(leisure_trips),
+            commute_trips = sum(commute_trips))
+
+subset_strava_geo3 <- subset_strava_geo3 %>% mutate(commute_perc = (commute_trips/(commute_trips+leisure_trips)*100))
+
+
+
+
+```
+# try out commute percentage
+```{r}
+
+a <- subset_strava_geo2 %>% filter(edgeUID == 123434554)
+a <- a %>% mutate(commute_trips = forward_commute_trip_count+reverse_commute_trip_count)
+a <- a %>% mutate(leisure_trips = forward_leisure_trip_count+reverse_leisure_trip_count)
+a <- a %>% mutate(commute_perc = (commute_trips/(commute_trips+leisure_trips))*100)
+
+b <- a%>% mutate(date = lubridate::ymd(date))%>% group_by(edgeUID,osmId, azimuth,date = floor_date(date, "month")) %>% 
+  summarize(total_trip_count = sum(total_trip_count),
+            leisure_trips = sum(leisure_trips),
+            commute_trips = sum(commute_trips))
+```
+
+
+# AV NETZ Pre processing
+```{r}
+#Select the points which intersect with the rectangle
+kt_av_try <- st_transform(kt_av_try, crs = 4326)
+subset_av <- st_crop(kt_av_try, num_rec) %>% st_transform(crs = 2056)
+
+subset_av2 <- st_crop(kt_av_try, num_rec2) %>% st_transform(crs = 2056)
+
+subset_av3 <- st_crop(kt_av_try, num_rec3) %>% st_transform(crs = 2056)
+
+
+# azimuth
+subset_av <- subset_av %>% mutate(azimuth_av = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+
+subset_av2 <- subset_av2 %>% mutate(azimuth_av = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+
+subset_av3 <- subset_av3 %>% mutate(azimuth_av = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+```
+
+
+
+# try pre processing (Variante 2, Schlieren)
+```{r}
+
+subset_strava_geo_clean <- subset_strava_geo %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+subset_strava_geo_cleanJ <- st_join(subset_av,subset_strava_geo_clean, join= st_intersects)
+
+subset_strava_geo_clean_try <- inner_join(subset_strava_geo,as.data.frame(subset_strava_geo_cleanJ),by= c("edgeUID", "osmId", "date"))
+subset_strava_geo_clean_try <- subset_strava_geo_clean_try %>% select(edgeUID,OBJECTID,total_trip_count.x,date, GEMEINDENA,TEXT,osmId,azimuth_av,azimuth.x, geometry.x)
+
+st_geometry(subset_strava_geo_clean_try) <- "geometry.x"
+  
+
+
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_try %>% group_by(edgeUID,OBJECTID,date) %>% filter(abs(azimuth_av - azimuth.x) <= 20 |
+         abs(azimuth_av - azimuth.x + 180)<= 20 |
+         abs(azimuth_av - azimuth.x - 180)<= 20 |
+         abs(azimuth_av - azimuth.x - 360) <= 20 |
+         abs(azimuth_av - azimuth.x + 360) <= 20)
+        
+# subset_strava_geo <- subset_strava_geo %>% group_by(edgeUID) %>% summarise()
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID) %>% summarise()
+# multi <- subset_strava_geo_clean_tryF %>% filter(st_is(st_geometry(subset_strava_geo_clean_tryF),"MULTILINESTRING")) 
+
+# subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID) 
+# %>%  summarise(sum_edge = sum(total_trip_count.x))
+
+# 340 edges verbleiben nach azimuth filter, im vergleich zu 416 vorher. 
+# ein paar edges haben den selben eintrag für 2 versch AV segmente. analysieren und evt nur grösseres behalten?
+# counts nicht beachten und einfach bei allen strecken mit pseudo nodes ein Wert zuweisen (zu 1 edgeUID) im "normalen, alten" join?
+
+
+
+
+subset_strava_geo_clean_tryG <- st_cast(subset_strava_geo_clean_tryF, "LINESTRING")
+
+
+
+
+subset_strava_network <- as_sfnetwork(subset_strava_geo_clean_tryG, directed = FALSE)
+
+# subset_strava_network_simple <- convert(subset_strava_network,to_spatial_simple, summarise_attributes = list(edgeUID = "first"))
+subset_strava_network_smooth = convert(subset_strava_network, to_spatial_smooth, store_original_data = FALSE, require_equal= FALSE, summarise_attributes= middle_value)
+
+
+setdiff(subset_strava_network %>% activate("nodes") %>% st_geometry(), subset_strava_network_smooth %>% activate("nodes") %>% st_geometry())
+
+sub_edges_first <- subset_strava_network %>% activate("edges") %>% st_as_sf()
+sub_edges <- subset_strava_network_smooth %>% activate("edges") %>% st_as_sf()
+
+
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+# tm_shape(subset_strava_network_smooth %>% activate("edges") %>% st_as_sf()) + tm_lines(col = "black", size = 0.05) 
+tm_shape(subset_strava_geo2 %>% st_buffer(dist=7)) +tm_polygons(col = "blue", alpha=0.1)  + tm_shape(sub_edges) + tm_lines(col = "green", lwd = 2, alpha = 0.8) 
+
+  
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+  tm_shape(subset_strava_network %>% activate("edges") %>% st_as_sf()) + tm_lines(style = "cat", palette = "cat", n = 317, lwd = 2, alpha = 0.8) + tm_shape(p_nodes) + tm_dots(col = "black", size = 0.05) +
+  tm_shape(setdiff(subset_strava_network %>% activate("nodes") %>% st_geometry(), subset_strava_network_smooth %>% activate("nodes") %>% st_geometry())) +tm_dots(col = "blue",size = 0.05) + tm_shape(subset_av2) + tm_lines(col = "green", lwd = 4)
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+ 
+  tm_shape(r_network_smooth %>% activate("nodes") %>% as_tibble()) + tm_dots(size = 0.03) +
+  tm_shape(r_network_smooth %>% activate("edges") %>% as_tibble()) + tm_lines(lwd=3)
+
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+ 
+  tm_shape(st_cast(multi, "LINESTRING")) + tm_lines(col = "green", lwd = 2, alpha = 0.8)
+
+```
+
+
+# try pre processing (Variante 2, StadtZH) -- Achtung: gleiche Variabeln!
+```{r}
+
+subset_strava_geo_clean <- subset_strava_geo2 %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+
+
+subset_strava_geo_cleanJ <- st_join(subset_av2,subset_strava_geo_clean, join= st_intersects)
+
+
+
+
+
+subset_strava_geo_clean_try <- inner_join(subset_strava_geo2,as.data.frame(subset_strava_geo_cleanJ),by= c("edgeUID", "osmId", "date"))
+subset_strava_geo_clean_try <- subset_strava_geo_clean_try %>% select(edgeUID,OBJECTID,total_trip_count.x,date, GEMEINDENA,TEXT,osmId,azimuth_av,azimuth.x, geometry.x)
+
+st_geometry(subset_strava_geo_clean_try) <- "geometry.x"
+
+
+
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_try %>% group_by(edgeUID,OBJECTID,date) %>%
+  filter(abs(azimuth_av - azimuth.x) <= 20 |
+         abs(azimuth_av - azimuth.x + 180) <= 20 |
+         abs(azimuth_av - azimuth.x - 180) <= 20)
+# subset_strava_geo <- subset_strava_geo %>% group_by(edgeUID) %>% summarise()
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID) %>% summarise()
+# multi <- subset_strava_geo_clean_tryF %>% filter(st_is(st_geometry(subset_strava_geo_clean_tryF),"MULTILINESTRING"))
+
+# subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID)
+# %>%  summarise(sum_edge = sum(total_trip_count.x))
+
+
+
+subset_strava_geo_clean_tryG <- st_cast(subset_strava_geo_clean_tryF, "LINESTRING")
+
+
+
+
+subset_strava_network <- as_sfnetwork(subset_strava_geo_clean_tryG, directed = FALSE)
+
+# subset_strava_network_simple <- convert(subset_strava_network,to_spatial_simple, summarise_attributes = list(edgeUID = "first"))
+list_attr <- list(edgeUID = "random")
+middle_value <- list(edgeUID = function(x) {
+  n <- length(x)
+  if (n %% 2 == 0) {
+    middle <- n %/% 2
+    if (runif(1) > 0.5) {
+      return(x[middle])
+    } else {
+      return(x[middle + 1])
+    }
+  } else {
+    return(x[(n+1) %/% 2])
+  }
+})
+subset_strava_network_smooth = convert(subset_strava_network, to_spatial_smooth, store_original_data = FALSE, require_equal= FALSE, summarise_attributes= middle_value)
+
+
+setdiff(subset_strava_network %>% activate("nodes") %>% st_geometry(), subset_strava_network_smooth %>% activate("nodes") %>% st_geometry())
+
+sub_edges_first <- subset_strava_network %>% activate("edges") %>% st_as_sf()
+sub_edges <- subset_strava_network_smooth %>% activate("edges") %>% st_as_sf()
+
+
+
+```
+
+
+# try pre processing (Variante 2, Schaffhstr-Irchel)-- -- Achtung: gleiche Variabeln!
+```{r}
+subset_strava_geo_clean <- subset_strava_geo3 %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+
+
+subset_strava_geo_cleanJ <- st_join(subset_av3,subset_strava_geo_clean, join= st_intersects)
+
+
+
+
+
+subset_strava_geo_clean_try <- inner_join(subset_strava_geo3,as.data.frame(subset_strava_geo_cleanJ),by= c("edgeUID", "osmId", "date"))
+subset_strava_geo_clean_try <- subset_strava_geo_clean_try %>% select(edgeUID,OBJECTID,total_trip_count.x,date, GEMEINDENA,TEXT,osmId,azimuth_av,azimuth.x, geometry.x)
+
+st_geometry(subset_strava_geo_clean_try) <- "geometry.x"
+
+
+
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_try %>% group_by(edgeUID,OBJECTID,date) %>%
+  filter(abs(azimuth_av - azimuth.x) <= 20 |
+         abs(azimuth_av - azimuth.x + 180)<= 20 |
+         abs(azimuth_av - azimuth.x - 180)<= 20 |
+         abs(azimuth_av - azimuth.x - 360) <= 20 |
+         abs(azimuth_av - azimuth.x + 360) <= 20))
+         
+
+# subset_strava_geo <- subset_strava_geo %>% group_by(edgeUID) %>% summarise()
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID) %>% summarise()
+# multi <- subset_strava_geo_clean_tryF %>% filter(st_is(st_geometry(subset_strava_geo_clean_tryF),"MULTILINESTRING"))
+
+# subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID)
+# %>%  summarise(sum_edge = sum(total_trip_count.x))
+
+try_sum <- inner_join(subset_strava_geo_clean_tryF, as.data.frame(subset_strava_geo3), by= "edgeUID")
+sum(try_sum$total_trip_count)
+
+subset_strava_geo_clean_tryG <- st_cast(subset_strava_geo_clean_tryF, "LINESTRING")
+
+
+
+
+subset_strava_network <- as_sfnetwork(subset_strava_geo_clean_tryG, directed = FALSE)
+
+# subset_strava_network_simple <- convert(subset_strava_network,to_spatial_simple, summarise_attributes = list(edgeUID = "first"))
+subset_strava_network_smooth = convert(subset_strava_network, to_spatial_smooth, store_original_data = FALSE, require_equal= FALSE, summarise_attributes= middle_value)
+
+
+setdiff(subset_strava_network %>% activate("nodes") %>% st_geometry(), subset_strava_network_smooth %>% activate("nodes") %>% st_geometry())
+
+sub_edges_first <- subset_strava_network %>% activate("edges") %>% st_as_sf()
+sub_edges <- subset_strava_network_smooth %>% activate("edges") %>% st_as_sf()
+
+
+
+
+
+
+```
+
+# try stadtZH counts im netzwerk
+```{r}
+subset_strava_geo_clean <- subset_strava_geo2 %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+
+
+subset_strava_geo_cleanJ <- st_join(subset_av2,subset_strava_geo_clean, join= st_intersects)
+
+
+
+
+
+subset_strava_geo_clean_try <- inner_join(subset_strava_geo2,as.data.frame(subset_strava_geo_cleanJ),by= c("edgeUID", "osmId", "date"))
+subset_strava_geo_clean_try <- subset_strava_geo_clean_try %>% select(edgeUID,OBJECTID,total_trip_count.x,date, GEMEINDENA,TEXT,osmId,azimuth_av,azimuth.x,commute_perc.x, geometry.x)
+
+st_geometry(subset_strava_geo_clean_try) <- "geometry.x"
+
+
+
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_try %>% group_by(edgeUID,OBJECTID,date, total_trip_count.x,commute_perc.x ) %>%
+  filter(abs(azimuth_av - azimuth.x) <= 20 |
+         abs(azimuth_av - azimuth.x + 180) <= 20 |
+         abs(azimuth_av - azimuth.x - 180) <= 20)
+
+
+subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID,date,total_trip_count.x, commute_perc.x) %>% summarise()
+#   summarize(across(total_trip_count.x, sum))
+# multi <- subset_strava_geo_clean_tryF %>% filter(st_is(st_geometry(subset_strava_geo_clean_tryF),"MULTILINESTRING"))
+
+# subset_strava_geo_clean_tryF <- subset_strava_geo_clean_tryF %>% group_by(edgeUID)
+# %>%  summarise(sum_edge = sum(total_trip_count.x))
+
+
+
+subset_strava_geo_clean_tryG <- st_cast(subset_strava_geo_clean_tryF, "LINESTRING")
+
+
+# subset_strava_geo_spread <- spread(subset_strava_geo_clean_tryG, key = date, value = total_trip_count.x)
+
+subset_strava_network <- as_sfnetwork(subset_strava_geo_clean_tryG, directed = FALSE)
+
+# subset_strava_network_simple <- convert(subset_strava_network,to_spatial_simple, summarise_attributes = list(edgeUID = "first"))
+list_attr2 <- list(edgeUID = "random",total_trip_count.x = "median", commute_perc.x = "mean", date = "first")
+subset_strava_network_smooth = convert(subset_strava_network, to_spatial_smooth, store_original_data = FALSE, require_equal= FALSE, summarise_attributes= list_attr)
+
+
+# setdiff(subset_strava_network %>% activate("nodes") %>% st_geometry(), subset_strava_network_smooth %>% activate("nodes") %>% st_geometry())
+
+sub_edges_first <- subset_strava_network %>% activate("edges") %>% st_as_sf()
+sub_edges <- subset_strava_network_smooth %>% activate("edges") %>% st_as_sf()
+
+
+
+```
+
+
+
+# KT AV network buffer st_join (Variante 1, discarded)
+
+```{r}
+
+
+subset_av_p <- subset_av %>% st_buffer(dist = 12)
+
+subsets_av_join <- st_join(subset_av_p, subset_strava_geo, join = st_intersects)
+
+# variante endcap style flat
+# q3subset_av_p <- subset_av %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+# 
+# q3subsets_av_join <- st_join(q3subset_av_p, subset_strava_geo, join = st_intersects)
+
+subsets_av_join <- subsets_av_join %>%
+  mutate(date = lubridate::ymd(date))
+
+# city_counts_year <- city_counts_year %>% group_by(FK_ZAEHLER, DATUM = floor_date(DATUM, "year")) %>%
+ # summarize(across(VELO_total, sum))
+
+# subsets_join_groupTry <- subsets_join %>% group_by(UUID,edgeUID) %>% summarise()
+
+# subsets_av_join_grouped <- subsets_av_join %>% group_by(OBJECTID) %>% summarise(edge_total = sum(total_trip_count))
+
+# subsets_av_join_grouped %>% filter(OBJECTID == 71196)
+
+subsets_av_join_grouped <- subsets_av_join %>% 
+  group_by(OBJECTID, edgeUID, date = floor_date(date, "month")) %>% 
+  summarize(across(total_trip_count, sum))
+
+
+
+  # summarise(segment_mean = mean(total_trip_count)) %>% 
+  # group_by(OBJECTID) %>% 
+  # summarise(edge_total = sum(segment_mean))
+
+
+```
+
+# join using st_centroid in the other direction (q prefix)
+```{r}
+# normal buffer
+q_subset_strava_p <- subset_strava_geo %>% st_buffer(dist = 12)
+
+
+q_subsets_join <- st_join(st_centroid(subset_av2),subset_strava_geo_clean,join = st_intersects)
+
+# special buffer (does not make a difference!)
+# q2_subset_strava_p <- subset_strava_geo %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+# 
+# q2_subsets_join <- st_join(st_centroid(subset_av),q2_subset_strava_p,join = st_intersects)
+# 
+# 
+# q_subsets_join <- q_subsets_join %>%  mutate(date = lubridate::ymd(date))
+# q2_subsets_join <- q2_subsets_join %>%  mutate(date = lubridate::ymd(date))
+
+```
+
+# further processing to plot or compare
+```{r}
+# group after AV segments. sum all days to months for each edge
+q_subsets_join_grouped <- q_subsets_join %>% group_by(OBJECTID, edgeUID, date = floor_date(date, "month")) %>% 
+  summarize(across(total_trip_count, sum))
+
+# monthly sum to plot & compare
+q_subset_sum_month <- q_subsets_join_grouped %>% group_by(OBJECTID, date) %>% 
+  summarize(across(total_trip_count, sum))
+
+# lines to plot
+q_subset_sum_month_l <- left_join(subset_av, as.data.frame(q_subset_sum_month), by = "OBJECTID")
+st_geometry(q_subset_sum_month_l) <- "geometry.x"
+```
+
+
+# network generation: post processing (all variants)
+```{r}
+
+#Variante 1: st_centroid mit pseudo nodes
+
+q_subset_av <- inner_join(subset_av, as.data.frame(q_subsets_join), by = "OBJECTID")
+q_subset_av <- q_subset_av %>% select(OBJECTID,total_trip_count,date,edgeUID, GEMEINDENA.x,TEXT.x,osmId,azimuth_av.x,azimuth)
+
+q_subset_av_try <- q_subset_av %>% group_by(OBJECTID,date) %>%
+  filter(abs(azimuth_av.x - azimuth) <= 20 |
+         abs(azimuth_av.x - azimuth + 180) <= 20 |
+         abs(azimuth_av.x - azimuth - 180) <= 20)
+#show edges that are now completely left out
+setdiff(q_subset_av$edgeUID,q_subset_av_try$edgeUID)
+
+
+# Variante 2 (nur die strava edges nach st_centroid join werden benutzt)
+
+
+r_subset_strava <- inner_join(subset_strava_geo2, as.data.frame(q_subsets_join), by = "edgeUID")
+r_subset_strava %>% group_by(edgeUID) %>% summarise()
+r_subset_strava <- r_subset_strava %>% select(edgeUID,OBJECTID,total_trip_count.x,date.x, GEMEINDENA,TEXT,osmId.x,azimuth_av,azimuth.x)
+
+r_subset_strava_az <- r_subset_strava %>% group_by(OBJECTID,date.x) %>% 
+  filter(abs(azimuth_av - azimuth.x) <= 20 | 
+         abs(azimuth_av - azimuth.x + 180) <= 20 | 
+         abs(azimuth_av - azimuth.x - 180) <= 20)
+
+r_lines <- r_subset_strava_az %>% group_by(edgeUID,azimuth.x) %>% summarise()
+r_lines <- r_lines %>% mutate(azimuth_cat = case_when(
+  azimuth.x >= 0 & azimuth.x < 45 ~ "0-45,135-180",
+  azimuth.x >= 45 & azimuth.x < 90 ~ "45-135",
+  azimuth.x >= 90 & azimuth.x < 135 ~ "45-135",
+  azimuth.x >= 135 & azimuth.x < 180 ~ "0-45,135-180",
+  azimuth.x >= 180 & azimuth.x < 225 ~ "0-45,135-180",
+  azimuth.x >= 225 & azimuth.x < 270 ~ "45-135",
+  azimuth.x >= 270 & azimuth.x < 315 ~ "45-135",
+  azimuth.x >= 315 & azimuth.x < 360 ~ "0-45,135-180",
+  TRUE ~ "Other"
+))
+
+# hist(subset_strava_geo$azimuth)
+
+  # require_equal = "azimuth_cat" ,
+r_network <- as_sfnetwork(r_lines, directed = FALSE)
+
+# check_azimuth_similarity <- function(x) {
+# 
+#   abs(azimuth.x[1] - azimuth.x[2]) <= 30 || abs(abs(azimuth.x[1] - azimuth.x[2]) - 180) <= 30
+# }
+# 
+# list_az <- list(azimuth.x = check_azimuth_similarity)
+r_network_smooth = convert(r_network, to_spatial_smooth,require_equal = "azimuth_cat" ,summarise_attributes = list_attr)
+
+
+
+
+r_edges <- st_as_sf(r_network_smooth %>% activate("edges"))
+r_rejoin <- inner_join(r_edges, as.data.frame(subset_strava_geo2), by= "edgeUID")
+
+# re join to AV for post processing (V2)
+
+# versuch intersection snap _try
+r_rejoin_try <- st_difference(r_rejoin %>% group_by(edgeUID) %>% summarise(), p_nodes_p)
+r_rejoin_try <- inner_join(r_rejoin_try, as.data.frame(r_rejoin), by = "edgeUID")
+
+#-------------
+
+r_rejoin_p <- r_rejoin_try %>% st_buffer(dist = 12, endCapStyle = 'FLAT')
+
+r_subsets_join <- st_join(st_centroid(subset_av2),r_rejoin_p,join = st_intersects)
+
+r_subset_av <- inner_join(subset_av2, as.data.frame(r_subsets_join), by = "OBJECTID")
+r_subset_av <- r_subset_av %>% select(OBJECTID,total_trip_count,date,edgeUID, GEMEINDENA.x,TEXT.x,osmId,azimuth_av.x,azimuth)
+r_subset_av <- r_subset_av %>% filter(!is.na(edgeUID))
+
+r_subset_av_09_21 <- r_subset_av  %>%  mutate(date = lubridate::ymd(date))%>% group_by(OBJECTID, date = floor_date(date, "month")) %>% 
+  summarize(across(total_trip_count, sum))
+
+st_write(r_subset_av_09_21,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\network_assessment\\Schaffhstr_r_subset_av_snap.shp",append = FALSE)
+
+#show edges that are now completely left out
+setdiff(q_subset_av$edgeUID,q_subset_av_try$edgeUID)
+sum(r_subset_av$total_trip_count)
+
+
+# V3: strava preprocessing vor st_join
+
+p_rejoin <- inner_join(sub_edges, as.data.frame(subset_strava_geo), by= "edgeUID")
+
+# st_write(p_rejoin %>% select(edgeUID,total_trip_count.x,commute_perc.x,date.x ,osmId,azimuth), "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\network_assessment\\p_rejoin.shp",append = FALSE)
+
+# versuch intersection snap _try
+p_rejoin_try <- st_difference(p_rejoin %>% group_by(edgeUID) %>% summarise(), p_nodes_p)
+p_rejoin_try <- inner_join(p_rejoin_try, as.data.frame(p_rejoin), by = "edgeUID")
+
+#-------------
+p_subset_strava_p <- p_rejoin %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+
+p_subsets_join <- st_join(st_centroid(subset_av),p_subset_strava_p,join = st_intersects)
+
+
+p_subset_av <- inner_join(subset_av, as.data.frame(p_subsets_join), by = "OBJECTID")
+p_subset_av <- p_subset_av %>% select(OBJECTID,total_trip_count,commute_perc,date,edgeUID, GEMEINDENA.x,TEXT.x,osmId,azimuth_av.x,azimuth)
+p_subset_av <- p_subset_av %>% filter(!is.na(total_trip_count))
+# p_subset_av <- p_subset_av %>% group_by(OBJECTID, date.y) %>% summarize(
+#   trips = sum(total_trip_count.x),                                                               commute= mean(commute_perc.x))
+
+p_subset_av_09_21 <- p_subset_av  %>%  mutate(date = lubridate::ymd(date))%>% group_by(OBJECTID, date = floor_date(date, "month")) %>% summarise(
+ trips = sum(total_trip_count),                                                               commute= median(commute_perc))
+
+st_write(p_subset_av,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\network_assessment\\test.shp",append = FALSE)
+
+p_subset_av$osmId
+# intersection snap
+subset_strava_network_smooth <- subset_strava_network_smooth %>% activate("nodes") %>% mutate(degree = centrality_degree())
+
+p_nodes <- st_as_sf(subset_strava_network_smooth %>% activate("nodes"))
+p_nodes <- p_nodes %>% filter(degree >=4)
+p_nodes_p <- p_nodes %>% st_buffer(dist = 15)
+p_nodes_p <- p_nodes_p %>% select(geometry.x)
+p_nodes_p <- st_union(p_nodes_p)
+
+
+# p_subset_av_try <- st_difference(p_subset_av %>% group_by(OBJECTID) %>% summarise(), p_nodes_p)
+# p_subset_av_try <- inner_join(p_subset_av_try, as.data.frame(p_subset_av), by = "OBJECTID")
+# 
+# p_subset_av_tryU <- p_subset_av_try %>% rbind(subset_av3)
+
+
+
+p_rejoin %>% group_by(edgeUID) %>% summarise()
+
+sum(p_subset_av$total_trip_count)
+
+
+
+```
+# buffer try
+```{r}
+buffer <- subset_strava_geo2 %>% filter(edgeUID== 123434312) %>% st_transform(crs = 2056)
+buffer <- buffer %>% st_buffer(dist = 10, endCapStyle = "FLAT")
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+tm_shape(buffer) + tm_polygons() + tm_shape(subset_strava_geo2 %>% filter(edgeUID== 123434312)) + tm_lines(lwd = 3)
+```
+
+
+# attempt tlm buffer st_join
+```{r}
+
+#Select the points which intersect with the rectangle
+tlm_try <- st_transform(tlm_try, crs = 4326)
+subset_tlm <- st_crop(tlm_try, num_rec)
+
+subset_tlm_p <- subset_tlm %>% st_buffer(dist = 12)
+
+subsets_join <- st_join(subset_tlm_p, subset_strava_geo, join = st_intersects)
+
+# city_counts_year <- city_counts_year %>% group_by(FK_ZAEHLER, DATUM = floor_date(DATUM, "year")) %>%
+ # summarize(across(VELO_total, sum))
+
+subsets_join_groupTry <- subsets_join %>% group_by(UUID,edgeUID) %>% summarise()
+
+subsets_join_grouped <- subsets_join %>% group_by(UUID) %>% summarise(edge_total = sum(total_trip_count)) 
+
+
+```
+
+# azimuth 
+```{r}
+
+
+st_azimuth(subset_tlm %>% filter(UUID == "{07D5756E-EE40-4D2E-8826-03A86E287A94}")%>% st_startpoint(),subset_tlm %>% filter(UUID == "{07D5756E-EE40-4D2E-8826-03A86E287A94}")%>% st_endpoint() )
+
+st_azimuth(subset_tlm %>% filter(UUID == "{93B48DD8-CE5D-4D6B-8AAA-E03EE70A6004}")%>% st_startpoint(),subset_tlm %>% filter(UUID == "{93B48DD8-CE5D-4D6B-8AAA-E03EE70A6004}")%>% st_endpoint())
+
+## similiar azimuth despite different direction of travel 
+
+```
+
+```{r}
+
+st_azimuth(subset_strava_geo %>% filter(edgeUID == 123400126)%>% st_startpoint(),subset_strava_geo %>% filter(edgeUID == 123400126)%>% st_endpoint())
+
+st_azimuth(subset_strava_geo %>% filter(edgeUID == 123400132)%>% st_startpoint(),subset_strava_geo %>% filter(edgeUID == 123400132)%>% st_endpoint())
+
+
+```
+
+
+
+
+
+
+# plot Variante 2 smoothing nach st_join(st_centroid)
+
+```{r}
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+ tm_shape(r_rejoin_p) + tm_polygons(alpha = 0.2, border.col = "blue")+
+ tm_shape(r_subset_av %>% mutate(date = lubridate::ymd(date))%>% group_by(OBJECTID, date = floor_date(date,"month")) %>% 
+  summarize(across(total_trip_count, sum))) +tm_lines(col= "total_trip_count", palette = "YlOrRd", style = "jenks",alpha = 0.9, lwd=6) + tm_shape(st_centroid(subset_av2)) + tm_dots(col = "red", size = 0.05)  + tm_shape(p_nodes_p) +tm_polygons(col = "purple", alpha = 0.2)
+
+```
+
+#plot in viewer
+```{r}
+
+
+
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+ 
+  tm_shape(p_subset_strava_p) + tm_polygons(col = "green", border.col = "darkgreen", lwd = 2, alpha = 0.1)+
+ tm_shape(p_subset_av %>%  mutate(date = lubridate::ymd(date))%>% group_by(OBJECTID, date = floor_date(date, "month")) %>% 
+  summarize(across(total_trip_count, sum))) + tm_lines(col = "total_trip_count", palette = "YlOrRd", style = "jenks", lwd = 6) +
+  tm_shape(st_centroid(subset_av3)) + tm_dots(col = "red", size = 0.05)
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+ 
+tm_shape(subset_strava_geo3) +tm_lines(col = "red", lwd=5) +
+  tm_shape(subset_av3) + tm_lines(lwd=3)
+
+## Variante 3, Strava preprocessing vor st_join(st_centroid)
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+ 
+  tm_shape(p_subset_strava_p) + tm_polygons(alpha = 0.1, border.col = "blue")+
+ # tm_shape(p_subset_av_try %>%  mutate(date = lubridate::ymd(date))%>% group_by(OBJECTID, date = floor_date(date, "month")) %>% 
+ #  summarize(across(total_trip_count, sum))) +  tm_lines(col = "total_trip_count", palette = "YlOrRd", style = "jenks", lwd = 6) + 
+  tm_shape(p_subset_av_09_21) + tm_lines(col = "trips", palette = "YlOrRd", style = "jenks", lwd = 6) + tm_shape(p_nodes_p) +tm_polygons(col = "purple", alpha = 0.2)+   tm_shape(st_centroid(subset_av3)) + tm_dots(col = "red", size = 0.05)
+
+# %>%  mutate(date = lubridate::ymd(date))%>% group_by(OBJECTID, date = floor_date(date, "month")) %>% 
+#   summarize(across(total_trip_count, sum))
+
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+ 
+tm_shape(sub_edges) + tm_lines(col = "blue", lwd = 3) +tm_shape(subset_strava_geo_clean_try) + tm_lines(col = "red", lwd = 1.5)
+```

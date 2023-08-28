@@ -1,0 +1,199 @@
+---
+title: "slope, maxspeed, sve, swiss sep"
+output: html_document
+date: "2023-05-02"
+---
+
+```{r}
+
+library(tidyverse)
+library(sp)
+library(sf)
+library(tmap)
+library(leaflet)
+library(igraph)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(progress)
+library(raster)
+library(terra)
+
+```
+
+
+# added edges prepare
+```{r}
+
+added_edges_final <- added_edges %>%  group_by(OBJECTID, ref_obj_ID, geometry) %>% summarise()
+added_edges_final[added_edges_final$ref_obj_ID == 110066, "OBJECTID"] <- 100031
+
+st_write(added_edges_final,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\added_edges.shp" )
+
+added_edges_midpoints <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\av_added_midpoints_2.shp")
+
+```
+
+# slope finish from QGis
+```{r}
+
+slope_left <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\swissalti3D\\slope_left.shp")
+slope_right <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\swissalti3D\\slope_right.shp")
+
+slope <- bind_rows(slope_left,slope_right)
+slope <- st_transform(slope,crs = 2056)
+slope <- slope %>% subset(!duplicated(slope))
+slope <- slope %>% group_by(prof_label) %>% summarise(slope = mean(dirslop, na.rm = TRUE))
+slope <- st_crop(slope, st_bbox(polygon))
+slope$slope <- abs(slope$slope) %>% round(digits = 0)
+
+slope_zero <- slope
+slope_zero$slope <- ifelse(is.nan(slope_zero$slope), 0, slope_zero$slope)
+
+hist(slope_zero$slope, breaks = 50, xlim = c(0,10))
+
+# slope_zero <- slope_zero %>% mutate(slope = case_when(
+#   slope == 0 ~ "no slope",
+#   slope > 0 & slope <= 2 ~ "little slope",
+#   slope > 2 & slope <= 4 ~ "medium slope",
+#   slope > 4 ~ "steep slope"
+# ))
+
+slope_zero <- slope_zero %>% mutate(slope = case_when(
+  slope == 0 ~ 0,
+  slope > 0 & slope <= 2 ~ 1,
+  slope > 2 & slope <= 4 ~ 2,
+  slope > 4 ~ 3
+))
+
+
+slope_zero <- slope_zero %>% rename(OBJECTI = prof_label)
+slope_zero <- slope_zero %>% mutate(OBJECTI = as.numeric(OBJECTI))
+
+st_write(slope, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\swissalti3D\\slope_full.shp")
+
+```
+
+
+# maxspeed
+```{r}
+
+maxspeed_city <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\tim_strassStadtZH\\Thomas\\taz_tbl_tempo.shp")
+maxspeed_osm <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\osm\\osm_maxspeed.shp")
+av_midpoints <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\KTZH_AV_Netz\\points\\points.shp")
+
+av_midpoints <- st_crop(av_midpoints, st_bbox(polygon))
+
+
+
+# city
+
+maxspeed_cityB <- st_buffer(maxspeed_city, dist = 10,endCapStyle = "FLAT")
+av_midpoints_speedB <- st_join(av_midpoints, maxspeed_cityB)
+av_midpoints_speedB <-av_midpoints_speedB %>%
+  group_by(OBJECTID) %>%
+  slice_sample(n = 1) %>%
+  ungroup() %>% select(OBJECTID, vmax,geometry)
+av_midpoints_speedCity <-av_midpoints_speedB %>% filter(!is.na(vmax))
+
+
+
+# stations_merge$KT_NR <- ifelse(is.na(stations_merge$KT_NR),stations_merge$fk_zaehler, stations_merge$KT_NR)
+
+# rest with osm
+maxspeed_osm <- select(maxspeed_osm, 1,2,3,4,12)
+maxspeed_osm <- maxspeed_osm %>% filter(!is.na(maxspeed_osm$maxsped))
+maxspeed_osmB <- st_buffer(maxspeed_osm,dist = 10, endCapStyle = "FLAT")
+
+av_midpoints_speedKT <- av_midpoints_speedB %>% filter(is.na(vmax))
+av_midpoints_speedKT <- st_join(av_midpoints_speedKT, maxspeed_osmB)
+av_midpoints_speedKT$vmax <- ifelse(is.na(av_midpoints_speedKT$vmax),av_midpoints_speedKT$maxsped,av_midpoints_speedKT$vmax)
+av_midpoints_speedKT <-av_midpoints_speedKT %>%
+  group_by(OBJECTID) %>%
+  slice_sample(n = 1) %>%
+  ungroup() %>% select(OBJECTID, vmax,geometry)
+av_midpoints_speedKT <-av_midpoints_speedKT %>% mutate(vmax = as.numeric(vmax))
+
+# av_midpoints_speedKT %>%
+#   group_by(OBJECTID) %>%
+#   filter(n() > 1) %>%
+#   ungroup()
+
+av_midpoints_speed <- bind_rows(av_midpoints_speedCity, av_midpoints_speedKT)
+
+av_midpoints_speed <- av_midpoints_speed %>% mutate(vmax = case_when(
+  vmax <= 30 ~ "slow",
+  vmax > 30 & vmax <= 50 ~ "medium",
+  vmax > 50 & vmax <= 120 ~ "fast",
+  is.na(vmax) ~ "unknown"))
+
+av_midpoints_speed <- av_midpoints_speed %>% mutate(vmax = case_when(
+  vmax <= 30 ~ 1,
+  vmax > 30 & vmax <= 50 ~ 2,
+  vmax > 50 & vmax <= 120 ~ 3,
+  is.na(vmax) ~ 0))
+
+
+plot(maxspeed_city)
+
+```
+
+
+# SVE
+```{r}
+
+# nearest_r2 <- st_nearest_feature(AVnetz, g_sf)
+# AVnetz <- AVnetz %>% mutate(green_g = g_sf$geometry[nearest_r2])
+# AVnetz <- AVnetz %>% mutate(dist_10_green = st_distance(geometry,green_g, by_element = TRUE))
+
+sve <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\KTZH_SVE\\SVE_clip.shp")
+
+sve_u <- st_union(sve, by_feature = FALSE)
+
+nearest_sve <- st_nearest_feature(av_midpoints_r,sve)
+
+av_midpoints_r <- av_midpoints_r %>% mutate(sve_g = sve$geometry[nearest_sve])
+av_midpoints_r <- av_midpoints_r %>% mutate(dist_sve = st_distance(geometry,sve_g, by_element = TRUE))
+
+
+
+```
+# SWISS_SEP NEIGHBOURING INDEX
+```{r}
+
+swiss_sep_P <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Swiss-SEP\\swiss_sep_clip.shp")
+
+swiss_sep_P <- swiss_sep_P %>% dplyr::select(11,12,13,14,15)
+swiss_sep_P <- as_Spatial(swiss_sep_P)
+
+swiss_sep_R <- raster(extent(swiss_sep_P), resolution = c(500, 500))
+
+
+
+
+swiss_sep_R <- rasterize(swiss_sep_P, swiss_sep_R, field = "ssep3_d", fun = median)
+
+writeRaster(swiss_sep_R,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Swiss-SEP\\swiss_sep_R.tiff", overwrite=TRUE)
+
+
+swiss_sep <- raster::extract(swiss_sep_R, av_midpoints_r, na.rm = TRUE, df = TRUE)
+
+swiss_sep <- swiss_sep %>% mutate(ID = as.character(ID))
+swiss_sep <- swiss_sep %>% rename(swiss_sep_D = layer)
+av_midpoints_r <- av_midpoints_r %>% rownames_to_column(var = "ID")
+av_midpoints_r <- right_join(av_midpoints_r, swiss_sep, by= "ID")
+
+av_midpoints_r <- av_midpoints_r %>% dplyr::select(OBJECTID, PopDens, u80_perc,swiss_sep_D,dist_sve,geometry)
+
+
+av_midpoints_r$swiss_sep_D <- ifelse(is.na(av_midpoints_r$swiss_sep_D), 0, av_midpoints_r$swiss_sep_D)
+
+st_write(av_midpoints_r, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\av_midpoints_variables.shp", append = FALSE)
+
+
+
+plot(swiss_sep_R)
+
+
+```
+

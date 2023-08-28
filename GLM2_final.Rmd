@@ -1,0 +1,850 @@
+---
+title: "GLM2_validation"
+output: html_document
+date: "2023-06-20"
+---
+
+
+```{r}
+library(tidyverse)
+library(sp)
+library(sf)
+library(tmap)
+library(leaflet)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(ggplot2)
+library(corrr)
+library(dplyr)
+library(MASS)
+library(car)
+library(jtools)
+library(fastDummies)
+library(statmod)
+library(units)
+library(lme4)
+library(glmmTMB)
+library(performance)
+library(gridExtra)
+
+library(grid)
+
+```
+
+
+# Random Sampling Loop
+```{r}
+# Set the number of iterations
+n_iterations <- 20
+
+# Create an empty dataframe to store the results
+GLM2_random_results <- data.frame(matrix(NA, ncol = 8, nrow = n_iterations))
+colnames(GLM2_random_results) <- c("MAE", "MSE", "RMSE", "MPE", "MAPE", "AIC", "R2_all", "R2_fixed")
+
+# Loop over the iterations
+for (i in 1:n_iterations) {
+  # Set a different random seed for each iteration
+  set.seed(i)
+  
+  # Perform random sampling
+  train_indices <- sample(nrow(stations_ols_clean_V2), 0.8 * nrow(stations_ols_clean_V2))
+  train_data_v2 <- stations_ols_clean_V2[train_indices, ]
+  test_data_v2 <- stations_ols_clean_V2[-train_indices, ]
+  
+  # # Fit the model
+  # GLM_model_random <- glmmTMB(trips_station ~ trips_strava + dist_2_resid + dist_10_green + accidents + u80_perc + vmax + dist_sve + PopDens + slope  + season_spring + season_summer + season_winter + swiss_sep_D + mix_value + (1 | OBJECTID), data = train_data_v2, family = "nbinom2")
+  
+  GLM_model_random <- glmmTMB(trips_station ~ trips_strava + crr_cmm + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_winter + (1|OBJECTID), data = train_data_v2, family = "nbinom2") 
+  
+  # Make predictions
+  prediction_v2 <- predict(GLM_model_random, newdata = prediction_data_v2, type = "response", allow.new.levels = TRUE)
+  
+  # Add the predicted count to the prediction_data dataframe
+  prediction_data_v2$count <- prediction_v2
+  
+  # Assign predictions back to the test data
+  test_data_v2 <- inner_join(test_data_v2, prediction_data_v2 %>% dplyr::select(OBJECTID, month, year, count), by = c("OBJECTID", "month", "year"))
+  test_data_v2 <- test_data_v2 %>% dplyr::select(1, 2, 3, 4, 25, 8, 9, dplyr::everything())
+  
+  # Calculate accuracy metrics
+  mae <- mean(abs(test_data_v2$trips_station - test_data_v2$count))
+  mse <- mean((test_data_v2$trips_station - test_data_v2$count)^2)
+  rmse <- sqrt(mse)
+  mpe <- mean((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station) * 100
+  mape <- mean(abs((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station)) * 100
+  
+  # Extract AIC
+  aic <- AIC(GLM_model_random)
+    r2 <- performance::r2(GLM_model_random)
+
+  
+  # Store the results in the dataframe
+  GLM2_random_results[i, ] <- c(mae, mse, rmse, mpe, mape, aic,r2$R2_conditional,r2$R2_marginal)
+}
+
+# Add a row number column to GLM2_random_results
+GLM2_random_results$row_number <- seq(nrow(GLM2_random_results))
+
+GLM2_random <- GLM2_random_results %>%
+  summarize(
+    Measure = c("SD", "Mean", "Median"),
+    MAE = c(sd(MAE), mean(MAE), median(MAE)),
+    MSE = c(sd(MSE), mean(MSE), median(MSE)),
+    RMSE = c(sd(RMSE), mean(RMSE), median(RMSE)),
+    MPE = c(sd(MPE), mean(MPE), median(MPE)),
+    MAPE = c(sd(MAPE), mean(MAPE), median(MAPE)),
+    AIC = c(sd(AIC), mean(AIC), median(AIC)),
+    R2_all = c(sd(R2_all), mean(R2_all), median(R2_all)),
+    R2_fixed = c(sd(R2_fixed), mean(R2_fixed), median(R2_fixed))
+  )
+
+
+# Plotting the variation of error measures
+plmape <- ggplot(GLM2_random_results, aes(x = row_number)) + 
+  geom_line(aes(y = MAPE, color = "MAPE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MAPE = "purple")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results_land$row_number)) +
+  scale_y_continuous(breaks = seq(0, 200, 25))+
+  theme_minimal() +
+  ggtitle("Variation of Mean Absolute Percentage Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+# Plotting the variation of error measures
+plmae <- ggplot(GLM2_random_results, aes(x = row_number)) +
+  geom_line(aes(y = MAE, color = "MAE")) +
+   labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MAE = "darkred")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results_land$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of Mean Absolute Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+# Plotting the variation of error measures
+plrmse <- ggplot(GLM2_random_results, aes(x = row_number)) +
+  geom_line(aes(y = RMSE, color = "RMSE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(RMSE = "blue")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results_land$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of Root Mean Squared Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+plaic <- ggplot(GLM2_station_results, aes(x = row_number)) +
+  geom_line(aes(y = AIC, color = "AIC")) +
+  labs(x = "Iteration", y = "AIC", color = "Error Measure") +
+  scale_color_manual(values = c(AIC = "orange")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results_land$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of the AIC") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+
+grid_random <- grid.arrange(plmae,plrmse,plmape,plaic,ncol = 2,top = textGrob("Random Sampling", gp = gpar(fontsize = 20)))
+
+
+library(grid)
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\GLM2_grid_random_land.tiff", plot = grid_random, width = 12, height = 6)
+
+```
+
+# Station Sampling
+
+```{r}
+# Set the number of iterations
+n_iterations <- 20
+
+# Create an empty dataframe to store the results
+GLM2_station_results <- data.frame(matrix(NA, ncol = 8, nrow = n_iterations))
+colnames(GLM2_station_results) <- c("MAE", "MSE", "RMSE", "MPE", "MAPE", "AIC", "R2_all", "R2_fixed")
+
+# Loop over the iterations
+for (i in 1:n_iterations) {
+  # Set a different random seed for each iteration
+  set.seed(i)
+  
+# stations sampling
+train_stations_v2 <- unique(stations_ols_clean$OBJECTID)
+train_stations_v2 <- sample(train_stations_v2, round(0.80*length(train_stations_v2)))
+train_data_v2 <- stations_ols_clean %>% dplyr::filter(OBJECTID %in% train_stations_v2)
+test_data_v2 <- stations_ols_clean %>% dplyr::filter(!OBJECTID %in% train_stations_v2)
+  
+  # Fit the model
+  GLM_model_station <- glmmTMB(trips_station ~ trips_strava + dist_2_resid + dist_10_green + accidents + u80_perc + vmax + dist_sve + PopDens + slope  + season_spring + season_summer + season_winter + swiss_sep_D + mix_value + (1 | OBJECTID), data = train_data_v2, family = "nbinom2")
+  
+
+  
+  # Make predictions
+  prediction_v2 <- predict(GLM_model_station, newdata = prediction_data_v2, type = "response", allow.new.levels = TRUE)
+  
+  # Add the predicted count to the prediction_data dataframe
+  prediction_data_v2$count <- prediction_v2
+  
+  # Assign predictions back to the test data
+  test_data_v2 <- inner_join(test_data_v2, prediction_data_v2 %>% dplyr::select(OBJECTID, month, year, count), by = c("OBJECTID", "month", "year"))
+  test_data_v2 <- test_data_v2 %>% dplyr::select(1, 2, 3, 4, 25, 8, 9, dplyr::everything())
+  
+  # Calculate accuracy metrics
+  mae <- mean(abs(test_data_v2$trips_station - test_data_v2$count))
+  mse <- mean((test_data_v2$trips_station - test_data_v2$count)^2)
+  rmse <- sqrt(mse)
+  mpe <- mean((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station) * 100
+  mape <- mean(abs((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station)) * 100
+  
+  # Extract AIC
+  aic <- AIC(GLM_model_station)
+  r2 <- performance::r2(GLM_model_station)
+  
+  # Store the results in the dataframe
+  GLM2_station_results[i, ] <- c(mae, mse, rmse, mpe, mape, aic,r2$R2_conditional,r2$R2_marginal)
+}
+
+# Add a row number column to GLM2_station_results
+GLM2_station_results$row_number <- seq(nrow(GLM2_station_results))
+
+GLM2_station <- GLM2_station_results %>%
+  summarize(
+    Measure = c("SD", "Mean", "Median"),
+    MAE = c(sd(MAE), mean(MAE), median(MAE)),
+    MSE = c(sd(MSE), mean(MSE), median(MSE)),
+    RMSE = c(sd(RMSE), mean(RMSE), median(RMSE)),
+    MPE = c(sd(MPE), mean(MPE), median(MPE)),
+    MAPE = c(sd(MAPE), mean(MAPE), median(MAPE)),
+    AIC = c(sd(AIC), mean(AIC), median(AIC)),
+    R2_all = c(sd(R2_all), mean(R2_all), median(R2_all)),
+    R2_fixed = c(sd(R2_fixed), mean(R2_fixed), median(R2_fixed))
+  )
+
+
+# Plotting the variation of error measures
+plmpemape <- ggplot(GLM2_station_results, aes(x = row_number)) +
+  geom_line(aes(y = MPE, color = "MPE")) +
+  geom_line(aes(y = MAPE, color = "MAPE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MPE = "orange", MAPE = "purple")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results$row_number)) +
+  theme_minimal() +
+  ggtitle("Variation of Mean (absolute) Percentage Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+# Plotting the variation of error measures
+plmaermse <- ggplot(GLM2_station_results, aes(x = row_number)) +
+  geom_line(aes(y = MAE, color = "MAE")) +
+  geom_line(aes(y = RMSE, color = "RMSE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MAE = "darkred", RMSE = "lightblue")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of Mean Absolute Error and Root Mean Squared Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+# Plotting the variation of error measures
+plmse <- ggplot(GLM2_station_results, aes(x = row_number)) +
+  geom_line(aes(y = MSE, color = "MSE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MSE = "blue")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of Mean Squared Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+plaic <- ggplot(GLM2_station_results, aes(x = row_number)) +
+  geom_line(aes(y = AIC, color = "AIC")) +
+  labs(x = "Iteration", y = "AIC", color = "Error Measure") +
+  scale_color_manual(values = c(MSE = "brown")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of the AIC") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+
+grid_station <- grid.arrange(plmse,plmaermse,plmpemape,plaic,ncol = 2,top = textGrob("Station Sampling", gp = gpar(fontsize = 20)))
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\GLM2_grid_station.tiff", plot = grid_station, width = 12, height = 6)
+
+```
+
+
+
+# Station Sampling +2 stations
+
+```{r}
+# Set the number of iterations
+n_iterations <- 20
+
+# Create an empty dataframe to store the results
+GLM2_station_results_land <- data.frame(matrix(NA, ncol = 8, nrow = n_iterations))
+colnames(GLM2_station_results_land) <- c("MAE", "MSE", "RMSE", "MPE", "MAPE", "AIC", "R2_all", "R2_fixed")
+
+# Loop over the iterations
+for (i in 1:n_iterations) {
+  # Set a different random seed for each iteration
+  set.seed(i)
+  
+# stations sampling
+train_stations_v2 <- unique(stations_ols_clean_V2$OBJECTID)
+train_stations_v2 <- sample(train_stations_v2, round(0.80*length(train_stations_v2)))
+train_data_v2 <- stations_ols_clean_V2 %>% dplyr::filter(OBJECTID %in% train_stations_v2)
+test_data_v2 <- stations_ols_clean_V2 %>% dplyr::filter(!OBJECTID %in% train_stations_v2)
+  
+  # # Fit the model original
+  # GLM_model_station <- glmmTMB(trips_station ~ trips_strava + dist_2_resid + dist_10_green + accidents + u80_perc + vmax + dist_sve + PopDens + slope  + season_spring + season_summer + season_winter + swiss_sep_D + mix_value + (1 | OBJECTID), data = train_data_v2, family = "nbinom2")
+  
+   # Fit the model new lasso, w/o 2022, spring and summer
+  GLM_model_station <- glmmTMB(trips_station ~ trips_strava + crr_cmm + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_winter + (1|OBJECTID), data = train_data_v2, family = "nbinom2") 
+  
+
+  
+  # Make predictions
+  prediction_v2 <- predict(GLM_model_station, newdata = prediction_data_v2, type = "response", allow.new.levels = TRUE)
+  
+  # Add the predicted count to the prediction_data dataframe
+  prediction_data_v2$count <- prediction_v2
+  
+  # Assign predictions back to the test data
+  test_data_v2 <- inner_join(test_data_v2, prediction_data_v2 %>% dplyr::select(OBJECTID, month, year, count), by = c("OBJECTID", "month", "year"))
+  test_data_v2 <- test_data_v2 %>% dplyr::select(1, 2, 3, 4, 25, 8, 9, dplyr::everything())
+  
+  # Calculate accuracy metrics
+  mae <- mean(abs(test_data_v2$trips_station - test_data_v2$count))
+  mse <- mean((test_data_v2$trips_station - test_data_v2$count)^2)
+  rmse <- sqrt(mse)
+  mpe <- mean((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station) * 100
+  mape <- mean(abs((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station)) * 100
+  
+  # Extract AIC
+  aic <- AIC(GLM_model_station)
+  r2 <- performance::r2(GLM_model_station)
+  
+  # Store the results in the dataframe
+  GLM2_station_results_land[i, ] <- c(mae, mse, rmse, mpe, mape, aic,r2$R2_conditional,r2$R2_marginal)
+}
+
+# Add a row number column to GLM2_station_results_land
+GLM2_station_results_land$row_number <- seq(nrow(GLM2_station_results_land))
+
+GLM2_station_land <- GLM2_station_results_land %>%
+  summarize(
+    Measure = c("SD", "Mean", "Median"),
+    MAE = c(sd(MAE), mean(MAE), median(MAE)),
+    MSE = c(sd(MSE), mean(MSE), median(MSE)),
+    RMSE = c(sd(RMSE), mean(RMSE), median(RMSE)),
+    MPE = c(sd(MPE), mean(MPE), median(MPE)),
+    MAPE = c(sd(MAPE), mean(MAPE), median(MAPE)),
+    AIC = c(sd(AIC), mean(AIC), median(AIC)),
+    R2_all = c(sd(R2_all), mean(R2_all), median(R2_all)),
+    R2_fixed = c(sd(R2_fixed), mean(R2_fixed), median(R2_fixed))
+  )
+
+
+# Plotting the variation of error measures
+plmape <- ggplot(GLM2_station_results_land, aes(x = row_number)) + 
+  geom_line(aes(y = MAPE, color = "MAPE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MAPE = "purple")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results_land$row_number)) +
+  scale_y_continuous(breaks = seq(0, 200, 25))+
+  theme_minimal() +
+  ggtitle("Variation of Mean Absolute Percentage Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+# Plotting the variation of error measures
+plmae <- ggplot(GLM2_station_results_land, aes(x = row_number)) +
+  geom_line(aes(y = MAE, color = "MAE")) +
+   labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MAE = "darkred")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results_land$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of Mean Absolute Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+# Plotting the variation of error measures
+plrmse <- ggplot(GLM2_station_results_land, aes(x = row_number)) +
+  geom_line(aes(y = RMSE, color = "RMSE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(RMSE = "blue")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results_land$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of Root Mean Squared Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+plaic <- ggplot(GLM2_station_results_land, aes(x = row_number)) +
+  geom_line(aes(y = AIC, color = "AIC")) +
+  labs(x = "Iteration", y = "AIC", color = "Error Measure") +
+  scale_color_manual(values = c(AIC = "orange")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results_land$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of the AIC") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+
+grid_station <- grid.arrange(plmae,plrmse,plmape,plaic,ncol = 2,top = textGrob("Station Sampling", gp = gpar(fontsize = 20)))
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\GLM2_grid_station_land.tiff", plot = grid_station, width = 12, height = 6)
+
+```
+
+# model using all data
+
+```{r}
+# all data
+train_data_v3 <- stations_ols_clean_V2
+
+
+
+# #  #original, ohne crr_cmm und 2022
+# model_v3 <- glmmTMB(trips_station ~ trips_strava + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_spring + season_summer + season_winter + (1|OBJECTID), data= train_data_v3,family = "nbinom2")
+
+
+model_v3 <- glmmTMB(trips_station ~ trips_strava + crr_cmm + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope +  season_winter + (1|OBJECTID), data= train_data_v3,family = "nbinom2")
+
+
+
+
+prediction_data_v3 <- regression_strava_filt
+prediction_data_v3 <- prediction_data_v3 %>% rename(OBJECTID = OBJECTI)
+prediction_data_v3$trips_strava <- log(prediction_data_v3$trips_strava)
+
+
+
+# enter one-hot encoding for months and years. months are aggregated to seasons.
+prediction_data_v3<- prediction_data_v3 %>% mutate(season = case_when(
+  month == 1 | month == 2 | month == 12 ~ "winter",
+  month == 3 | month == 4 | month == 5 ~ "spring",
+  month == 6 | month == 7 | month == 8 ~ "summer",
+  month == 9 | month == 10 | month == 11 ~ "autumn"
+))
+
+prediction_data_v3 <- dummy_cols(prediction_data_v3, select_columns = c("season", "year"), remove_first_dummy = TRUE)
+
+
+
+# make a prediction 
+prediction_v3 <- predict(model_v3, newdata = prediction_data_v3, type = "response", allow.new.levels = TRUE)
+
+# add the predicted count to the prediction_data dataframe
+prediction_data_v3$count <- prediction_v3
+
+
+regression_strava_filt_v3 <- prediction_data_v3
+
+
+regression_strava_filt_v3 <- regression_strava_filt_v3 %>% dplyr::select(1,2,"year","count", everything())
+
+# in_sample_alldata <- inner_join(regression_strava_filt_v3 %>% dplyr::select(1,2,"year","count"), stations_ols_clean, by = c("OBJECTID", "month", "year"))
+
+summary(model_v3)
+
+performance::r2(model_v3)
+multicollinearity(model_v3)
+```
+
+# calculate in sample accuracies
+```{r}
+# assign back to in sample predictions
+test_data_alldata <- train_data_v3
+predictions_alldata <- predict(model_v3, newdata =test_data_alldata, type = "response")
+test_data_alldata$predictions <- predictions_alldata
+test_data_alldata <- test_data_alldata %>% dplyr::select(1,2,3,4,predictions, everything())
+test_data_alldata$relative_diff <- ((test_data_alldata$predictions - test_data_alldata$trips_station) / test_data_alldata$trips_station) * 100
+test_data_alldata$relative_diff_abs <- abs(test_data_alldata$relative_diff)
+# test_data_alldata$predictions <- exp(test_data_alldata$predictions)
+# test_data_alldata$trips_station <- exp(test_data_alldata$trips_station)
+ # test_data_alldata$trips_strava <- exp(test_data_alldata$trips_strava)
+
+#rejoin to geometry to export to gis
+#reload stations_geo_final in "station_ols.rmd" if needed
+in_sample_acc_geo  <- left_join(test_data_alldata %>% dplyr::select(1,2,3,4,5,8,9,10,26,27), stations_geo_final, by = c("OBJECTID"))
+
+in_sample_acc_geo <- in_sample_acc_geo %>% group_by(Name.x, geometry) %>% summarise(median_trips = median(trips_station), median_rel_diff = median(relative_diff_abs))
+                                                                          
+st_write(in_sample_acc_geo,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\insampleaccgeov2.shp", delete_layer = TRUE, append = FALSE)
+
+
+ggplot(test_data_alldata, aes(x = trips_station, y = predictions)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  labs(title = "In Sample: Predicted Counts vs. Actual Counts", x = "Actual Counts", y = "Predicted Counts") +
+  scale_x_continuous(breaks = seq(0, 400000, 50000), labels = scales::comma) +
+  scale_y_continuous(breaks = seq(0, 400000, 50000), labels = scales::comma) +
+  theme_minimal()+
+  theme(plot.title = element_text(size = 16, face = "bold", hjust = 0),
+        panel.grid.minor = element_blank(),
+        axis.title = element_text(size = 10, face = "bold"))
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Predicted_vs_Actuals_insample.tiff", width = 12, height = 6, dpi = 300, device = "tiff", scale = 0.7)
+
+
+# Create a scatter plot of predicted count differences
+ggplot(test_data_alldata, aes(x = trips_station, y = ((predictions - trips_station)/trips_station)*100,colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+ scale_color_manual(values = rainbow(length(unique(test_data_alldata$Name)))) + ggtitle("Relative difference of predictions vs actual")
+
+ggplot(test_data_alldata, aes(x = trips_station, y = (predictions - trips_station),colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+ scale_color_manual(values = rainbow(length(unique(test_data_alldata$Name)))) + ggtitle("Absolute difference of predictions vs actual")
+
+
+
+
+library(ggplot2)
+
+test_data_alldata <- test_data_alldata %>% dplyr::arrange(Location)
+
+ggplot(test_data_alldata, aes(x = Name, y = relative_diff, fill = Location)) +
+  geom_boxplot(color = "black", alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", fill = "Location") +
+  scale_fill_manual(values = c("City" = "Red", "Canton" = "Blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6)) +
+  coord_cartesian(ylim = c(-50, 400)) +
+  guides(fill = guide_legend(title = "Location", title.position = "top", ncol = 1)) +
+  ggtitle("Prediction Accuracy after Station")
+# ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Stations_relative_accuracy_boxplot_nolog.tiff")
+
+
+
+
+# Calculate accuracy metrics
+mae <- mean(abs(test_data_alldata$trips_station - test_data_alldata$predictions))
+mse <- mean((test_data_alldata$trips_station - test_data_alldata$predictions)^2)
+rmse <- sqrt(mse)
+mpe <- mean((test_data_alldata$predictions - test_data_alldata$trips_station) / test_data_alldata$trips_station) * 100
+mape <- mean(abs((test_data_alldata$predictions - test_data_alldata$trips_station) / test_data_alldata$trips_station)) * 100
+
+# Print the accuracy metrics
+summary(model_v3)
+
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+cat("Mean Percentage Error (MPE):", mpe, "%\n")
+cat("Mean Absolute Percentage Error (MAPE):", mape, "%\n")
+
+
+
+```
+
+# Prepare shapefile with predictions
+```{r}
+
+alldata_predictions <- regression_strava_filt_v3 %>% dplyr::select(1,2,3,4)
+
+# alldata_pred_test <- regression_strava_filt_v3 %>% dplyr::select(1,2,3,4)
+
+
+# Define the number of days in each month
+days_in_month <- c(31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
+
+# Calculate the daily average for each month and edge
+alldata_predictions <- alldata_predictions %>%
+  mutate(daily_avg = count / 30)
+
+# Calculate the average daily counts for April to September per edge
+daily_avg_april_oct <- alldata_predictions %>%
+  filter(month >= 4 & month <= 10) %>%
+  group_by(OBJECTID) %>%
+  summarize(daily_avg_april_oct = round(mean(daily_avg)))
+
+# Calculate the annual average daily bicyclist count per edge
+annual_avg_daily_bicyclist <- alldata_predictions %>%
+  group_by(OBJECTID) %>%
+  summarize(annual_avg_daily_bicyclist = round(mean(daily_avg)))
+
+# Merge the results back into the original dataframe
+alldata_predictions <- left_join(alldata_predictions, daily_avg_april_oct, by = "OBJECTID")
+alldata_predictions <- left_join(alldata_predictions, annual_avg_daily_bicyclist, by = "OBJECTID")
+
+
+alldata_predictions <- left_join(alldata_predictions,AVnetz_counts %>% dplyr::select(OBJECTID,geometry.x), by= "OBJECTID")
+
+alldata_predictions <- st_as_sf(alldata_predictions, sf_column_name = "geometry.x")
+
+alldata_predictions <- alldata_predictions %>% group_by(OBJECTID, daily_avg_april_oct, annual_avg_daily_bicyclist, geometry.x) %>% summarise() 
+
+st_write(alldata_predictions,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\alldata_predictions_v2.shp", append= FALSE)
+
+
+```
+
+# % of segments with x accuracy plot
+```{r}
+
+insample_perc_acc <- test_data_alldata
+insample_perc_acc <- dplyr::select(insample_perc_acc, 1,2,3,4,5,9,10,26,27)
+
+breaks <- seq(0,470, by = 2.5)  # Create breaks from 0% to 100% with 5% intervals
+
+
+insample_perc_acc$abs_rel_diff_class <- cut(insample_perc_acc$relative_diff_abs, breaks = breaks, include.lowest = TRUE, labels = paste(breaks[-length(breaks)], "-", breaks[-1], "%", sep = ""))
+
+
+# Step 1: Create a complete table with all levels and counts, including missing levels with count zero
+complete_table <- insample_perc_acc %>%
+  count(abs_rel_diff_class, name = "count") %>%
+  complete(abs_rel_diff_class, fill = list(count = 0))
+
+# Step 2: Calculate the percentage of segments in each class
+total_segments <- nrow(insample_perc_acc)  # Total number of segments in the dataframe
+complete_table <- complete_table %>%
+  mutate(percentage = (count / total_segments) * 100)
+
+complete_table <- complete_table %>% filter(count !=0)
+
+# Calculate the cumulative percentage
+complete_table <- complete_table %>%
+  mutate(cumulative_percentage = cumsum(percentage))
+
+vector <- c(1.25,3.75,6.25,8.75,11.25,13.75,16.25,18.75,21.25,23.75,26.25,28.75,31.25,33.75,36.25,38.75,41.25,43.75,46.25,51.25,53.75,56.25,58.75,61.25,66.25,68.75,76.25,78.75,91.25,93.75,101.25,103.75,143.75,331.25,468.75)
+
+complete_table$middle <- vector
+#middle value generieren!!!!!
+
+
+
+# Plot the line plot
+ggplot(data = complete_table,
+       aes(x = middle, y = cumulative_percentage)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Relative Absolute Difference Predicted vs Actual (%)", y = "Cumulative % of Predicted Segments") +
+  scale_x_continuous(breaks = seq(0, 470, 25), limits = c(0, 470)) +
+  scale_y_continuous(breaks = seq(0, 100, 10), limits = c(0, 100)) +
+  theme_minimal() +
+    theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold")) +
+  ggtitle("In-Sample: Prediction Accuracy proportionally to Segments")
+  ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\insample_accuracy_segments.tiff")
+  
+```
+
+
+
+# try of plot relative station accuracy and locations
+```{r}
+
+# Count the number of unique stations for each location
+city_stations <- unique(test_data_alldata$Name[test_data_alldata$Location == "City"])
+canton_stations <- unique(test_data_alldata$Name[test_data_alldata$Location == "Canton"])
+
+# Define the number of colors based on unique stations
+nb.cols <- length(city_stations)
+nb.colsc <- length(canton_stations)
+
+# Generate color palettes
+col_city <- colorRampPalette(brewer.pal(9, "OrRd"))(nb.cols)
+col_cant <- colorRampPalette(brewer.pal(9, "BuGn"))(nb.colsc)
+
+ggplot(test_data_alldata, aes(x = trips_station, y = ((predictions - trips_station) / trips_station) * 100, colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+  scale_color_manual(values = c(col_cant, col_city),
+                     breaks = c(canton_stations, city_stations),
+                     labels = c(canton_stations, city_stations),
+                     guide = guide_legend(override.aes = list(fill = c(col_cant, col_city)),
+                                          title = c("Canton", "City"), ncol = 2)) +
+  ggtitle("Relative difference of predictions vs actual") +
+  theme(legend.position = "right", legend.direction = "vertical", legend.box = "horizontal")
+
+
+```
+
+# jitter plot 
+```{r}
+
+
+ggplot(test_data_alldata, aes(x = Name, y = relative_diff)) +
+  geom_jitter(aes(colour = Location), alpha = 0.6, width = 0.3, height = 0.1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", colour = "Location") +
+  scale_colour_manual(values = c("City" = "#990000", "Canton" = "#3333FF")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),panel.grid.minor = element_blank()) +
+  scale_y_continuous(breaks = seq(-50, 150, 25), limits = c(-50, 150))  +
+  ggtitle("In-Sample: Prediction Accuracy after Station and Location") 
+  ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\insample_jitter_relative.tiff")
+
+
+```
+# season analysis of accuracy
+```{r}
+
+alldata25 <- test_data_alldata %>% dplyr::filter(relative_diff_abs > 25) 
+alldata_season25 <- alldata25$season
+pl_25 <- ggplot(data.frame(alldata_season25), aes(x=alldata_season25)) +
+  labs(x = "Season", y = "Frequency") +
+  geom_bar() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 13, face = "bold"),panel.grid.minor = element_blank()) +
+  scale_y_continuous(breaks = seq(0, 50, 5), limits = c(0, 50))  +
+  ggtitle("Observations worse than ±25% ")
+
+alldata50 <- test_data_alldata %>% dplyr::filter(relative_diff_abs > 50) 
+alldata_season50 <- alldata50$season
+pl_50 <- ggplot(data.frame(alldata_season50), aes(x=alldata_season50)) +
+  labs(x = "Season", y = "Frequency") +
+  geom_bar() +
+  theme_minimal() +
+  theme(axis.text.x = element_text(size = 11),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 13, face = "bold"),panel.grid.minor = element_blank()) +
+  scale_y_continuous(breaks = seq(0, 10, 1), limits = c(0, 10))  +
+  ggtitle("Observations worse than ±50% ")
+
+library(grid)
+grid_ins_seasons <- grid.arrange(pl_25,pl_50,ncol = 2,top = textGrob("In-Sample Predictions: Distribution of Seasons in low Accuracies", gp = gpar(fontsize = 16, fontface = "bold")))
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\GLM2_grid_ins_season.tiff", plot = grid_ins_seasons, width = 12, height = 6)
+
+
+ggplot(test_data_alldata, aes(x = Name, y = relative_diff)) +
+  geom_jitter(aes(colour = season), alpha = 0.6, width = 0.3, height = 0.1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", colour = "Season") +
+  # scale_colour_manual(values = c("City" = "#990000", "Canton" = "#3333FF")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 16, face = "bold"),panel.grid.minor = element_blank()) +
+  scale_y_continuous(breaks = seq(-50, 150, 25), limits = c(-50, 150))  +
+  ggtitle("In-Sample: Prediction Accuracy after Station and Season") 
+  ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\insample_jitter_relative_season.tiff")
+
+```
+
+
+# stations sampling 90%
+
+# Station Sampling
+
+```{r}
+# Set the number of iterations
+n_iterations <- 20
+
+# Create an empty dataframe to store the results
+GLM2_station_results90 <- data.frame(matrix(NA, ncol = 8, nrow = n_iterations))
+colnames(GLM2_station_results90) <- c("MAE", "MSE", "RMSE", "MPE", "MAPE", "AIC", "R2_all", "R2_fixed")
+
+# Loop over the iterations
+for (i in 1:n_iterations) {
+  # Set a different random seed for each iteration
+  set.seed(i)
+  
+# stations sampling
+train_stations_v4 <- unique(stations_ols_clean_V2$OBJECTID)
+train_stations_v4 <- sample(train_stations_v4, round(0.90*length(train_stations_v4)))
+train_data_v4 <- stations_ols_clean_V2 %>% dplyr::filter(OBJECTID %in% train_stations_v4)
+test_data_v4 <- stations_ols_clean_V2 %>% dplyr::filter(!OBJECTID %in% train_stations_v4)
+  
+  # Fit the model
+  GLM_model_station90 <- glmmTMB(trips_station ~ trips_strava + dist_2_resid + dist_10_green + accidents + u80_perc + vmax + dist_sve + PopDens + slope  + season_spring + season_summer + season_winter + swiss_sep_D + mix_value + (1 | OBJECTID), data = train_data_v4, family = "nbinom2")
+  
+prediction_data_v4 <- prediction_data_v2
+  
+  # Make predictions
+  prediction_v4 <- predict(GLM_model_station90, newdata = prediction_data_v4, type = "response", allow.new.levels = TRUE)
+  
+  # Add the predicted count to the prediction_data dataframe
+  prediction_data_v4$count <- prediction_v4
+  
+  # Assign predictions back to the test data
+  test_data_v4 <- inner_join(test_data_v4, prediction_data_v4 %>% dplyr::select(OBJECTID, month, year, count), by = c("OBJECTID", "month", "year"))
+  test_data_v4 <- test_data_v4 %>% dplyr::select(1, 2, 3, 4, 25, 8, 9, dplyr::everything())
+  
+  # Calculate accuracy metrics
+  mae <- mean(abs(test_data_v4$trips_station - test_data_v4$count))
+  mse <- mean((test_data_v4$trips_station - test_data_v4$count)^2)
+  rmse <- sqrt(mse)
+  mpe <- mean((test_data_v4$count - test_data_v4$trips_station) / test_data_v4$trips_station) * 100
+  mape <- mean(abs((test_data_v4$count - test_data_v4$trips_station) / test_data_v4$trips_station)) * 100
+  
+  # Extract AIC
+  aic <- AIC(GLM_model_station90)
+  r2 <- performance::r2(GLM_model_station90)
+  
+  # Store the results in the dataframe
+  GLM2_station_results90[i, ] <- c(mae, mse, rmse, mpe, mape, aic,r2$R2_conditional,r2$R2_marginal)
+}
+
+# Add a row number column to GLM2_station_results90
+GLM2_station_results90$row_number <- seq(nrow(GLM2_station_results90))
+
+GLM2_station90 <- GLM2_station_results90 %>%
+  summarize(
+    Measure = c("SD", "Mean", "Median"),
+    MAE = c(sd(MAE), mean(MAE), median(MAE)),
+    MSE = c(sd(MSE), mean(MSE), median(MSE)),
+    RMSE = c(sd(RMSE), mean(RMSE), median(RMSE)),
+    MPE = c(sd(MPE), mean(MPE), median(MPE)),
+    MAPE = c(sd(MAPE), mean(MAPE), median(MAPE)),
+    AIC = c(sd(AIC), mean(AIC), median(AIC)),
+    R2_all = c(sd(R2_all), mean(R2_all), median(R2_all)),
+    R2_fixed = c(sd(R2_fixed), mean(R2_fixed), median(R2_fixed))
+  )
+
+
+# Plotting the variation of error measures
+plmpemape <- ggplot(GLM2_station_results90, aes(x = row_number)) +
+  geom_line(aes(y = MPE, color = "MPE")) +
+  geom_line(aes(y = MAPE, color = "MAPE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MPE = "orange", MAPE = "purple")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results90$row_number)) +
+  theme_minimal() +
+  ggtitle("Variation of Mean (absolute) Percentage Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+# Plotting the variation of error measures
+plmaermse <- ggplot(GLM2_station_results90, aes(x = row_number)) +
+  geom_line(aes(y = MAE, color = "MAE")) +
+  geom_line(aes(y = RMSE, color = "RMSE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MAE = "darkred", RMSE = "lightblue")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results90$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of Mean Absolute Error and Root Mean Squared Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+# Plotting the variation of error measures
+plmse <- ggplot(GLM2_station_results90, aes(x = row_number)) +
+  geom_line(aes(y = MSE, color = "MSE")) +
+  labs(x = "Iteration", y = "Error", color = "Error Measure") +
+  scale_color_manual(values = c(MSE = "blue")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results90$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of Mean Squared Error") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+plaic <- ggplot(GLM2_station_results90, aes(x = row_number)) +
+  geom_line(aes(y = AIC, color = "AIC")) +
+  labs(x = "Iteration", y = "AIC", color = "Error Measure") +
+  scale_color_manual(values = c(MSE = "brown")) +
+  scale_x_continuous(breaks = unique(GLM2_station_results90$row_number)) +  # Set x-axis breaks without 0.5 steps
+  theme_minimal() +
+  ggtitle("Variation of the AIC") +
+  theme(plot.title = element_text(size = 10, face = "bold", hjust = 0),panel.grid.minor = element_blank())
+
+
+grid_station90 <- grid.arrange(plmse,plmaermse,plmpemape,plaic,ncol = 2,top = textGrob("Station Sampling", gp = gpar(fontsize = 20)))
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\GLM2_grid_station90.tiff", plot = grid_station90, width = 12, height = 6)
+
+```
+
+
+

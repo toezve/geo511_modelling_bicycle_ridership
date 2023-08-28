@@ -1,0 +1,2090 @@
+title: "counting stations"
+output: html_document
+date: "2022-10-12"
+---
+This script loads data for all official counting stations by the Canton and the city. It links their georeferenced place to their counts. Further, the counts are aggregated to daily count data for each station. 
+
+city_counts= final grouped dataframe CITY
+canton_counts = final grouped dataframe CANTON
+
+
+# load packages
+```{r}
+library(tidyverse)
+library(sf)
+library(sp)
+library(tmap)
+library(leaflet)
+library(lubridate)
+library(readxl)
+library(stringr)
+```
+
+# read in stations geo data
+```{r}
+
+stations_stadt <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\StadtZH_VeloFuss_Zaehlstellen_061022\\data\\taz.view_eco_standorte.shp")
+
+stations_kt_ogd <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\KTZH_Verkehrsmessstellen_061022\\TBA_VERKEHRSMESSSTELLEN_P.shp")
+
+
+stations_kt_add <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\stations_kt_add.shp")
+stations_kt_add <- stations_kt_add %>% mutate(KT_NR = ifelse(row_number() == 9, 2221, KT_NR))
+
+
+```
+
+#filter for bike counting stations, merge with additional stations
+```{r}
+
+stations_kt_ogd <- stations_kt_ogd %>% filter(BETREIBER == "Verkehrsmesssstelle Velo: Betreiber: TBA - Auftrag: AFV,KoVe" | BETREIBER == "Verkehrsmesssstelle Velo: Betreiber: TBA -  Auftrag: AFV,KoVe")
+stations_kt_ogd <- stations_kt_ogd %>% select(1,3,4,10,12)
+
+
+stations_kt <- bind_rows(stations_kt_ogd,stations_kt_add)
+stations_kt %>%
+  mutate(KT_NR = ifelse(row_number() <= 25, MESSST_NR, KT_NR)) -> stations_kt
+stations_kt <- stations_kt %>% select(6,7,8,9,2,3,4,10)
+stations_kt <- stations_kt %>% slice(-n())
+
+
+
+
+```
+# city: filter for bike stations and filter old stations
+```{r}
+stations_stadt$mode <- substring(stations_stadt$abkuerzung,1,3)
+stations_stadt <- stations_stadt %>% filter(mode == "VZS")
+stations_stadt <- stations_stadt %>%filter(ymd_hms(bis) >= ymd_hms("2021-01-01 00:00:00") | is.na(bis))
+```
+
+# export stations
+```{r}
+
+st_write(stations_stadt,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\stadtzh\\stations_stadt_filter.shp", append = FALSE)
+
+st_write(stations_kt, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\stations_kt_filter.shp", append = FALSE)
+
+# st_write(bbox,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\bbox.shp")
+
+
+```
+
+#load count data: CITY
+
+```{r}
+counts_stadt_2021 <- read.csv("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\stadtzh\\2021_verkehrszaehlungen_werte_fussgaenger_velo.csv")
+
+counts_stadt_2022 <- read.csv("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\stadtzh\\2022_verkehrszaehlungen_werte_fussgaenger_velo.csv")
+
+#filter out the rows containing pedestrian values, by joining based on bike stations
+counts_stadt <- rbind.data.frame(counts_stadt_2021,counts_stadt_2022)
+counts_stadt <- right_join(counts_stadt, stations_stadt, by=c("FK_ZAEHLER" = "fk_zaehler"))
+
+
+```
+
+
+## join and aggregation CITY counts
+```{r}
+
+# city_counts <- inner_join(binz_count, binz_geo, by=c("FK_ZAEHLER" = "fk_zaehler"))
+## Error: cannot allocate vector of size 60.1 Gb
+
+#copy city_counts
+city_counts <- counts_stadt
+# Sum VELO_IN and VELO_OUT, but first convert NA values to 0
+city_counts <- city_counts %>% mutate(VELO_OUT = ifelse(is.na(VELO_OUT), 0, VELO_OUT))
+city_counts <- city_counts %>% mutate(VELO_IN = ifelse(is.na(VELO_IN), 0, VELO_IN))
+city_counts <- city_counts %>%
+  mutate(VELO_total = VELO_IN + VELO_OUT)
+
+# Delete columns 6 and 7
+city_counts <- city_counts %>%
+  dplyr::select(-6, -7)
+
+# Convert DATUM to date
+city_counts <- city_counts %>%
+  mutate(DATUM = lubridate::ymd_hm(DATUM))
+
+# Aggregate by year (for overview table)
+
+city_counts_year <- city_counts
+city_counts_year <- city_counts_year %>% group_by(FK_ZAEHLER, DATUM = floor_date(DATUM, "year")) %>%
+ summarize(across(VELO_total, sum))
+
+# Aggregate by day/month
+city_counts <- city_counts %>%
+  group_by(FK_ZAEHLER, DATUM = floor_date(DATUM, "month")) %>%
+ summarize(across(VELO_total, sum))
+
+city_counts <- inner_join(city_counts, stations_stadt, by=c("FK_ZAEHLER" = "fk_zaehler"))
+city_counts_year <- inner_join(city_counts_year, stations_stadt, by=c("FK_ZAEHLER" = "fk_zaehler"))
+
+
+city_counts$VELO_total_corr <- (city_counts$VELO_total * city_counts$korrekturf) %>% round(digits = 0)
+city_counts <- city_counts %>% dplyr::select(1,2,3,15, everything())
+city_counts_sf <- st_as_sf(city_counts)
+
+
+## Product: 
+#- All city counting stations that were running  in 2021 or 2022 (4 stations)  #- were running for 2021&2022 (23 stations)
+# summed both directions, aggregated to daily data and joined all spatial info of the counting station. 
+
+
+
+```
+
+
+#spot gaps in city data
+
+```{r}
+
+#copy city_counts
+city_counts2 <- counts_stadt
+# Sum VELO_IN and VELO_OUT, but first convert NA values to 0
+city_counts2 <- city_counts2 %>% mutate(VELO_OUT = ifelse(is.na(VELO_OUT), 0, VELO_OUT))
+city_counts2 <- city_counts2 %>% mutate(VELO_IN = ifelse(is.na(VELO_IN), 0, VELO_IN))
+city_counts2 <- city_counts2 %>%
+  mutate(VELO_total = VELO_IN + VELO_OUT)
+
+# Delete columns 6 and 7
+city_counts2 <- city_counts2 %>%
+  select(-6, -7)
+
+# Convert DATUM to date
+city_counts2 <- city_counts2 %>%
+  mutate(DATUM = lubridate::ymd_hm(DATUM))
+
+# Aggregate by day
+city_counts2 <- city_counts2 %>%
+  group_by(FK_ZAEHLER, DATUM = floor_date(DATUM, "day")) %>%
+ summarize(across(VELO_total, sum))
+
+city_counts2 <- inner_join(city_counts2, stations_stadt, by=c("FK_ZAEHLER" = "fk_zaehler"))
+
+
+library(tidyr)
+
+
+# create a list to store results for each station
+gaps_list <- list()
+
+# loop over each unique station
+for (station in unique(city_counts2$bezeichnun)) {
+  
+  # filter data for the current station
+  station_data <- city_counts2 %>% 
+    filter(bezeichnun == station)
+  
+  # get a sequence of dates from min to max
+  all_dates <- seq(as.Date(min(station_data$DATUM), "%Y%m%d"), 
+                    as.Date(max(station_data$DATUM), "%Y%m%d"), 
+                    by = "day")
+  
+  # identify missing dates
+  missing_dates <- setdiff(all_dates, as.Date(station_data$DATUM, "%Y%m%d"))
+  
+  # split the missing dates into consecutive periods
+  date_groups <- split(missing_dates, cumsum(c(0, diff(missing_dates) != 1)))
+  
+  # filter for gaps longer than 10 days and store in the gaps_list
+  gaps_list[[station]] <- Filter(function(x) length(x) > 10, date_groups)
+  
+  # print the station ID and number of gaps found
+  cat(paste0("Station ", station, " - Number of gaps: ", length(gaps_list[[station]]), "\n"))
+}
+
+# view the gaps for a specific station
+gaps_list[["ECO09113500"]]
+
+# parse the output dates to a more readable format
+gaps_list <- lapply(gaps_list, function(station_gaps) {
+  lapply(station_gaps, function(date_range) {
+    as.Date(date_range, origin = "1970-01-01")
+  })
+})
+
+gaps_list
+```
+
+
+# load CANTON counts station after station
+
+#918 Schlieren
+```{r}
+# 918 Schlieren
+# import the Excel files
+KT_0918_Schlieren_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@918@ - Rohdaten - Schlieren (ZH0918), Radweg (918_Schlieren).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0918_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@918@ - Rohdaten - Schlieren (ZH0918), Radweg (918_Schlieren).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0918_Schlieren_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @918@ - Rohdaten - Schlieren (ZH0918), Radweg (918_Schlieren).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0918_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @918@ - Rohdaten - Schlieren (ZH0918), Radweg (918_Schlieren).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0918_Schlieren_2021 <- KT_0918_Schlieren_2021[-1, ]
+Helpfile_0918_2021 <- Helpfile_0918_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0918_Schlieren_2021$Datum <- ymd(dmy(KT_0918_Schlieren_2021$Datum))
+Helpfile_0918_2021$Datum <- ymd(dmy(Helpfile_0918_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0918_Schlieren_2021$Date <- ymd_hm(paste(KT_0918_Schlieren_2021$Datum, substr(KT_0918_Schlieren_2021$Zeit, 1, 5)))
+Helpfile_0918_2021$Date <- ymd_hm(paste(Helpfile_0918_2021$Datum, substr(Helpfile_0918_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0918_Schlieren_2021 <- select(KT_0918_Schlieren_2021, Date, Gesamtverkehr)
+Helpfile_0918_2021 <- select(Helpfile_0918_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0918_Schlieren_2021$Gesamtverkehr <- KT_0918_Schlieren_2021$Gesamtverkehr + Helpfile_0918_2021$Gesamtverkehr
+
+KT_0918_Schlieren_2021 <- KT_0918_Schlieren_2021 %>% mutate(Zaehlst = "KT_0918_Schlieren_2021") %>% select(Zaehlst, everything())
+KT_0918_Schlieren_2021 <- KT_0918_Schlieren_2021 %>% mutate(NR = 918) %>% select(NR, everything())
+KT_0918_Schlieren_2021 <- KT_0918_Schlieren_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0918_Schlieren_2022 <- KT_0918_Schlieren_2022[-1, ]
+Helpfile_0918_2022 <- Helpfile_0918_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0918_Schlieren_2022$Datum <- ymd(dmy(KT_0918_Schlieren_2022$Datum))
+Helpfile_0918_2022$Datum <- ymd(dmy(Helpfile_0918_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0918_Schlieren_2022$Date <- ymd_hm(paste(KT_0918_Schlieren_2022$Datum, substr(KT_0918_Schlieren_2022$Zeit, 1, 5)))
+Helpfile_0918_2022$Date <- ymd_hm(paste(Helpfile_0918_2022$Datum, substr(Helpfile_0918_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0918_Schlieren_2022 <- select(KT_0918_Schlieren_2022, Date, Gesamtverkehr)
+Helpfile_0918_2022 <- select(Helpfile_0918_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0918_Schlieren_2022$Gesamtverkehr <- KT_0918_Schlieren_2022$Gesamtverkehr + Helpfile_0918_2022$Gesamtverkehr
+
+KT_0918_Schlieren_2022 <- KT_0918_Schlieren_2022 %>% mutate(Zaehlst = "KT_0918_Schlieren_2022") %>% select(Zaehlst, everything())
+KT_0918_Schlieren_2022 <- KT_0918_Schlieren_2022 %>% mutate(NR = 918) %>% select(NR, everything())
+KT_0918_Schlieren_2022 <- KT_0918_Schlieren_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0918_Schlieren <- rbind.data.frame(KT_0918_Schlieren_2021,KT_0918_Schlieren_2022)
+
+```
+
+#818 Schlieren
+```{r}
+
+# import the Excel files
+KT_0818_Schlieren_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@818@ - Rohdaten - Schlieren  (ZH0818), Radweg, (818_Schlieren).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0818_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@818@ - Rohdaten - Schlieren  (ZH0818), Radweg, (818_Schlieren).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0818_Schlieren_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @818@ - Rohdaten - Schlieren  (ZH0818), Radweg, (818_Schlieren).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0818_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @818@ - Rohdaten - Schlieren  (ZH0818), Radweg, (818_Schlieren).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0818_Schlieren_2021 <- KT_0818_Schlieren_2021[-1, ]
+Helpfile_0818_2021 <- Helpfile_0818_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0818_Schlieren_2021$Datum <- ymd(dmy(KT_0818_Schlieren_2021$Datum))
+Helpfile_0818_2021$Datum <- ymd(dmy(Helpfile_0818_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0818_Schlieren_2021$Date <- ymd_hm(paste(KT_0818_Schlieren_2021$Datum, substr(KT_0818_Schlieren_2021$Zeit, 1, 5)))
+Helpfile_0818_2021$Date <- ymd_hm(paste(Helpfile_0818_2021$Datum, substr(Helpfile_0818_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0818_Schlieren_2021 <- select(KT_0818_Schlieren_2021, Date, Gesamtverkehr)
+Helpfile_0818_2021 <- select(Helpfile_0818_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0818_Schlieren_2021$Gesamtverkehr <- KT_0818_Schlieren_2021$Gesamtverkehr + Helpfile_0818_2021$Gesamtverkehr
+
+KT_0818_Schlieren_2021 <- KT_0818_Schlieren_2021 %>% mutate(Zaehlst = "KT_0818_Schlieren_2021") %>% select(Zaehlst, everything())
+KT_0818_Schlieren_2021 <- KT_0818_Schlieren_2021 %>% mutate(NR = 818) %>% select(NR, everything())
+KT_0818_Schlieren_2021 <- KT_0818_Schlieren_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0818_Schlieren_2022 <- KT_0818_Schlieren_2022[-1, ]
+Helpfile_0818_2022 <- Helpfile_0818_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0818_Schlieren_2022$Datum <- ymd(dmy(KT_0818_Schlieren_2022$Datum))
+Helpfile_0818_2022$Datum <- ymd(dmy(Helpfile_0818_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0818_Schlieren_2022$Date <- ymd_hm(paste(KT_0818_Schlieren_2022$Datum, substr(KT_0818_Schlieren_2022$Zeit, 1, 5)))
+Helpfile_0818_2022$Date <- ymd_hm(paste(Helpfile_0818_2022$Datum, substr(Helpfile_0818_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0818_Schlieren_2022 <- select(KT_0818_Schlieren_2022, Date, Gesamtverkehr)
+Helpfile_0818_2022 <- select(Helpfile_0818_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0818_Schlieren_2022$Gesamtverkehr <- KT_0818_Schlieren_2022$Gesamtverkehr + Helpfile_0818_2022$Gesamtverkehr
+
+KT_0818_Schlieren_2022 <- KT_0818_Schlieren_2022 %>% mutate(Zaehlst = "KT_0818_Schlieren_2022") %>% select(Zaehlst, everything())
+KT_0818_Schlieren_2022 <- KT_0818_Schlieren_2022 %>% mutate(NR = 818) %>% select(NR, everything())
+KT_0818_Schlieren_2022 <- KT_0818_Schlieren_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0818_Schlieren <- rbind.data.frame(KT_0818_Schlieren_2021,KT_0818_Schlieren_2022)
+
+```
+#1018 Dietikon
+```{r}
+
+
+# import the Excel files
+KT_1018_Dietikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1018@ - Rohdaten - Dietikon (ZH1018), Radweg (1018_Dietikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1018_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1018@ - Rohdaten - Dietikon (ZH1018), Radweg (1018_Dietikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_1018_Dietikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1018@ - Rohdaten - Dietikon (ZH1018), Radweg (1018_Dietikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1018_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1018@ - Rohdaten - Dietikon (ZH1018), Radweg (1018_Dietikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_1018_Dietikon_2021 <- KT_1018_Dietikon_2021[-1, ]
+Helpfile_1018_2021 <- Helpfile_1018_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1018_Dietikon_2021$Datum <- ymd(dmy(KT_1018_Dietikon_2021$Datum))
+Helpfile_1018_2021$Datum <- ymd(dmy(Helpfile_1018_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1018_Dietikon_2021$Date <- ymd_hm(paste(KT_1018_Dietikon_2021$Datum, substr(KT_1018_Dietikon_2021$Zeit, 1, 5)))
+Helpfile_1018_2021$Date <- ymd_hm(paste(Helpfile_1018_2021$Datum, substr(Helpfile_1018_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1018_Dietikon_2021 <- select(KT_1018_Dietikon_2021, Date, Gesamtverkehr)
+Helpfile_1018_2021 <- select(Helpfile_1018_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1018_Dietikon_2021$Gesamtverkehr <- KT_1018_Dietikon_2021$Gesamtverkehr + Helpfile_1018_2021$Gesamtverkehr
+
+KT_1018_Dietikon_2021 <- KT_1018_Dietikon_2021 %>% mutate(Zaehlst = "KT_1018_Dietikon_2021") %>% select(Zaehlst, everything())
+KT_1018_Dietikon_2021 <- KT_1018_Dietikon_2021 %>% mutate(NR = 1018) %>% select(NR, everything())
+KT_1018_Dietikon_2021 <- KT_1018_Dietikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_1018_Dietikon_2022 <- KT_1018_Dietikon_2022[-1, ]
+Helpfile_1018_2022 <- Helpfile_1018_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1018_Dietikon_2022$Datum <- ymd(dmy(KT_1018_Dietikon_2022$Datum))
+Helpfile_1018_2022$Datum <- ymd(dmy(Helpfile_1018_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1018_Dietikon_2022$Date <- ymd_hm(paste(KT_1018_Dietikon_2022$Datum, substr(KT_1018_Dietikon_2022$Zeit, 1, 5)))
+Helpfile_1018_2022$Date <- ymd_hm(paste(Helpfile_1018_2022$Datum, substr(Helpfile_1018_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1018_Dietikon_2022 <- select(KT_1018_Dietikon_2022, Date, Gesamtverkehr)
+Helpfile_1018_2022 <- select(Helpfile_1018_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1018_Dietikon_2022$Gesamtverkehr <- KT_1018_Dietikon_2022$Gesamtverkehr + Helpfile_1018_2022$Gesamtverkehr
+
+KT_1018_Dietikon_2022 <- KT_1018_Dietikon_2022 %>% mutate(Zaehlst = "KT_1018_Dietikon_2022") %>% select(Zaehlst, everything())
+KT_1018_Dietikon_2022 <- KT_1018_Dietikon_2022 %>% mutate(NR = 1018) %>% select(NR, everything())
+KT_1018_Dietikon_2022 <- KT_1018_Dietikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_1018_Dietikon <- rbind.data.frame(KT_1018_Dietikon_2021,KT_1018_Dietikon_2022)
+
+```
+#1021 Dietikon
+
+```{r}
+# import the Excel files
+KT_1021_Dietikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1021@ - Rohdaten - Dietikon (ZH1021), Radstreifen und Trottoir,   Alltagsroute 04_056.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1021_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1021@ - Rohdaten - Dietikon (ZH1021), Radstreifen und Trottoir,   Alltagsroute 04_056.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_1021_Dietikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1021@ - Rohdaten - Dietikon (ZH1021), Radstreifen und Trottoir,   Alltagsroute 04_056.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1021_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1021@ - Rohdaten - Dietikon (ZH1021), Radstreifen und Trottoir,   Alltagsroute 04_056.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_1021_Dietikon_2021 <- KT_1021_Dietikon_2021[-1, ]
+Helpfile_1021_2021 <- Helpfile_1021_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1021_Dietikon_2021$Datum <- ymd(dmy(KT_1021_Dietikon_2021$Datum))
+Helpfile_1021_2021$Datum <- ymd(dmy(Helpfile_1021_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1021_Dietikon_2021$Date <- ymd_hm(paste(KT_1021_Dietikon_2021$Datum, substr(KT_1021_Dietikon_2021$Zeit, 1, 5)))
+Helpfile_1021_2021$Date <- ymd_hm(paste(Helpfile_1021_2021$Datum, substr(Helpfile_1021_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1021_Dietikon_2021 <- select(KT_1021_Dietikon_2021, Date, Gesamtverkehr)
+Helpfile_1021_2021 <- select(Helpfile_1021_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1021_Dietikon_2021$Gesamtverkehr <- KT_1021_Dietikon_2021$Gesamtverkehr + Helpfile_1021_2021$Gesamtverkehr
+
+KT_1021_Dietikon_2021 <- KT_1021_Dietikon_2021 %>% mutate(Zaehlst = "KT_1021_Dietikon_2021") %>% select(Zaehlst, everything())
+KT_1021_Dietikon_2021 <- KT_1021_Dietikon_2021 %>% mutate(NR = 1021) %>% select(NR, everything())
+KT_1021_Dietikon_2021 <- KT_1021_Dietikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_1021_Dietikon_2022 <- KT_1021_Dietikon_2022[-1, ]
+Helpfile_1021_2022 <- Helpfile_1021_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1021_Dietikon_2022$Datum <- ymd(dmy(KT_1021_Dietikon_2022$Datum))
+Helpfile_1021_2022$Datum <- ymd(dmy(Helpfile_1021_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1021_Dietikon_2022$Date <- ymd_hm(paste(KT_1021_Dietikon_2022$Datum, substr(KT_1021_Dietikon_2022$Zeit, 1, 5)))
+Helpfile_1021_2022$Date <- ymd_hm(paste(Helpfile_1021_2022$Datum, substr(Helpfile_1021_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1021_Dietikon_2022 <- select(KT_1021_Dietikon_2022, Date, Gesamtverkehr)
+Helpfile_1021_2022 <- select(Helpfile_1021_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1021_Dietikon_2022$Gesamtverkehr <- KT_1021_Dietikon_2022$Gesamtverkehr + Helpfile_1021_2022$Gesamtverkehr
+
+KT_1021_Dietikon_2022 <- KT_1021_Dietikon_2022 %>% mutate(Zaehlst = "KT_1021_Dietikon_2022") %>% select(Zaehlst, everything())
+KT_1021_Dietikon_2022 <- KT_1021_Dietikon_2022 %>% mutate(NR = 1021) %>% select(NR, everything())
+KT_1021_Dietikon_2022 <- KT_1021_Dietikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_1021_Dietikon <- rbind.data.frame(KT_1021_Dietikon_2021,KT_1021_Dietikon_2022)
+```
+
+
+#1519 Opfikon
+```{r}
+# import the Excel files
+KT_1519_Opfikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1519@ - Rohdaten - Opfikon (ZH1519), Glattbrugg, Trottoir und Radstreifen, (1519_Opfikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1519_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1519@ - Rohdaten - Opfikon (ZH1519), Glattbrugg, Trottoir und Radstreifen, (1519_Opfikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_1519_Opfikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1519@ - Rohdaten - Opfikon (ZH1519), Glattbrugg, Trottoir und Radstreifen, (1519_Opfikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1519_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1519@ - Rohdaten - Opfikon (ZH1519), Glattbrugg, Trottoir und Radstreifen, (1519_Opfikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_1519_Opfikon_2021 <- KT_1519_Opfikon_2021[-1, ]
+Helpfile_1519_2021 <- Helpfile_1519_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1519_Opfikon_2021$Datum <- ymd(dmy(KT_1519_Opfikon_2021$Datum))
+Helpfile_1519_2021$Datum <- ymd(dmy(Helpfile_1519_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1519_Opfikon_2021$Date <- ymd_hm(paste(KT_1519_Opfikon_2021$Datum, substr(KT_1519_Opfikon_2021$Zeit, 1, 5)))
+Helpfile_1519_2021$Date <- ymd_hm(paste(Helpfile_1519_2021$Datum, substr(Helpfile_1519_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1519_Opfikon_2021 <- select(KT_1519_Opfikon_2021, Date, Gesamtverkehr)
+Helpfile_1519_2021 <- select(Helpfile_1519_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1519_Opfikon_2021$Gesamtverkehr <- KT_1519_Opfikon_2021$Gesamtverkehr + Helpfile_1519_2021$Gesamtverkehr
+
+KT_1519_Opfikon_2021 <- KT_1519_Opfikon_2021 %>% mutate(Zaehlst = "KT_1519_Opfikon_2021") %>% select(Zaehlst, everything())
+KT_1519_Opfikon_2021 <- KT_1519_Opfikon_2021 %>% mutate(NR = 1519) %>% select(NR, everything())
+KT_1519_Opfikon_2021 <- KT_1519_Opfikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_1519_Opfikon_2022 <- KT_1519_Opfikon_2022[-1, ]
+Helpfile_1519_2022 <- Helpfile_1519_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1519_Opfikon_2022$Datum <- ymd(dmy(KT_1519_Opfikon_2022$Datum))
+Helpfile_1519_2022$Datum <- ymd(dmy(Helpfile_1519_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1519_Opfikon_2022$Date <- ymd_hm(paste(KT_1519_Opfikon_2022$Datum, substr(KT_1519_Opfikon_2022$Zeit, 1, 5)))
+Helpfile_1519_2022$Date <- ymd_hm(paste(Helpfile_1519_2022$Datum, substr(Helpfile_1519_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1519_Opfikon_2022 <- select(KT_1519_Opfikon_2022, Date, Gesamtverkehr)
+Helpfile_1519_2022 <- select(Helpfile_1519_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1519_Opfikon_2022$Gesamtverkehr <- KT_1519_Opfikon_2022$Gesamtverkehr + Helpfile_1519_2022$Gesamtverkehr
+
+KT_1519_Opfikon_2022 <- KT_1519_Opfikon_2022 %>% mutate(Zaehlst = "KT_1519_Opfikon_2022") %>% select(Zaehlst, everything())
+KT_1519_Opfikon_2022 <- KT_1519_Opfikon_2022 %>% mutate(NR = 1519) %>% select(NR, everything())
+KT_1519_Opfikon_2022 <- KT_1519_Opfikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_1519_Opfikon <- rbind.data.frame(KT_1519_Opfikon_2021,KT_1519_Opfikon_2022)
+```
+
+#1819 Kloten
+```{r}
+# import the Excel files
+KT_1819_Kloten_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1819@ - Rohdaten - Kloten (ZH1819), Trottoir und Radstreifen, (1819_Kloten).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1819_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1819@ - Rohdaten - Kloten (ZH1819), Trottoir und Radstreifen, (1819_Kloten).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_1819_Kloten_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1819@ - Rohdaten - Kloten (ZH1819), Trottoir und Radstreifen, (1819_Kloten).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1819_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1819@ - Rohdaten - Kloten (ZH1819), Trottoir und Radstreifen, (1819_Kloten).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_1819_Kloten_2021 <- KT_1819_Kloten_2021[-1, ]
+Helpfile_1819_2021 <- Helpfile_1819_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1819_Kloten_2021$Datum <- ymd(dmy(KT_1819_Kloten_2021$Datum))
+Helpfile_1819_2021$Datum <- ymd(dmy(Helpfile_1819_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1819_Kloten_2021$Date <- ymd_hm(paste(KT_1819_Kloten_2021$Datum, substr(KT_1819_Kloten_2021$Zeit, 1, 5)))
+Helpfile_1819_2021$Date <- ymd_hm(paste(Helpfile_1819_2021$Datum, substr(Helpfile_1819_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1819_Kloten_2021 <- select(KT_1819_Kloten_2021, Date, Gesamtverkehr)
+Helpfile_1819_2021 <- select(Helpfile_1819_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1819_Kloten_2021$Gesamtverkehr <- KT_1819_Kloten_2021$Gesamtverkehr + Helpfile_1819_2021$Gesamtverkehr
+
+KT_1819_Kloten_2021 <- KT_1819_Kloten_2021 %>% mutate(Zaehlst = "KT_1819_Kloten_2021") %>% select(Zaehlst, everything())
+KT_1819_Kloten_2021 <- KT_1819_Kloten_2021 %>% mutate(NR = 1819) %>% select(NR, everything())
+KT_1819_Kloten_2021 <- KT_1819_Kloten_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_1819_Kloten_2022 <- KT_1819_Kloten_2022[-1, ]
+Helpfile_1819_2022 <- Helpfile_1819_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1819_Kloten_2022$Datum <- ymd(dmy(KT_1819_Kloten_2022$Datum))
+Helpfile_1819_2022$Datum <- ymd(dmy(Helpfile_1819_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1819_Kloten_2022$Date <- ymd_hm(paste(KT_1819_Kloten_2022$Datum, substr(KT_1819_Kloten_2022$Zeit, 1, 5)))
+Helpfile_1819_2022$Date <- ymd_hm(paste(Helpfile_1819_2022$Datum, substr(Helpfile_1819_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1819_Kloten_2022 <- select(KT_1819_Kloten_2022, Date, Gesamtverkehr)
+Helpfile_1819_2022 <- select(Helpfile_1819_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1819_Kloten_2022$Gesamtverkehr <- KT_1819_Kloten_2022$Gesamtverkehr + Helpfile_1819_2022$Gesamtverkehr
+
+KT_1819_Kloten_2022 <- KT_1819_Kloten_2022 %>% mutate(Zaehlst = "KT_1819_Kloten_2022") %>% select(Zaehlst, everything())
+KT_1819_Kloten_2022 <- KT_1819_Kloten_2022 %>% mutate(NR = 1819) %>% select(NR, everything())
+KT_1819_Kloten_2022 <- KT_1819_Kloten_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_1819_Kloten <- rbind.data.frame(KT_1819_Kloten_2021,KT_1819_Kloten_2022)
+```
+
+#2020 Dietikon
+```{r}
+# import the Excel files
+KT_2020_Dietikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2020@ - Rohdaten - Dietikon (ZH2020), Radweg Nord und Süd, (2020_Dietikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2020_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2020@ - Rohdaten - Dietikon (ZH2020), Radweg Nord und Süd, (2020_Dietikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_2020_Dietikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2020@ - Rohdaten - Dietikon (ZH2020), Radweg Nord und Süd, (2020_Dietikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2020_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2020@ - Rohdaten - Dietikon (ZH2020), Radweg Nord und Süd, (2020_Dietikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_2020_Dietikon_2021 <- KT_2020_Dietikon_2021[-1, ]
+Helpfile_2020_2021 <- Helpfile_2020_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2020_Dietikon_2021$Datum <- ymd(dmy(KT_2020_Dietikon_2021$Datum))
+Helpfile_2020_2021$Datum <- ymd(dmy(Helpfile_2020_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2020_Dietikon_2021$Date <- ymd_hm(paste(KT_2020_Dietikon_2021$Datum, substr(KT_2020_Dietikon_2021$Zeit, 1, 5)))
+Helpfile_2020_2021$Date <- ymd_hm(paste(Helpfile_2020_2021$Datum, substr(Helpfile_2020_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2020_Dietikon_2021 <- select(KT_2020_Dietikon_2021, Date, Gesamtverkehr)
+Helpfile_2020_2021 <- select(Helpfile_2020_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2020_Dietikon_2021$Gesamtverkehr <- KT_2020_Dietikon_2021$Gesamtverkehr + Helpfile_2020_2021$Gesamtverkehr
+
+KT_2020_Dietikon_2021 <- KT_2020_Dietikon_2021 %>% mutate(Zaehlst = "KT_2020_Dietikon_2021") %>% select(Zaehlst, everything())
+KT_2020_Dietikon_2021 <- KT_2020_Dietikon_2021 %>% mutate(NR = 2020) %>% select(NR, everything())
+KT_2020_Dietikon_2021 <- KT_2020_Dietikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_2020_Dietikon_2022 <- KT_2020_Dietikon_2022[-1, ]
+Helpfile_2020_2022 <- Helpfile_2020_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2020_Dietikon_2022$Datum <- ymd(dmy(KT_2020_Dietikon_2022$Datum))
+Helpfile_2020_2022$Datum <- ymd(dmy(Helpfile_2020_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2020_Dietikon_2022$Date <- ymd_hm(paste(KT_2020_Dietikon_2022$Datum, substr(KT_2020_Dietikon_2022$Zeit, 1, 5)))
+Helpfile_2020_2022$Date <- ymd_hm(paste(Helpfile_2020_2022$Datum, substr(Helpfile_2020_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2020_Dietikon_2022 <- select(KT_2020_Dietikon_2022, Date, Gesamtverkehr)
+Helpfile_2020_2022 <- select(Helpfile_2020_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2020_Dietikon_2022$Gesamtverkehr <- KT_2020_Dietikon_2022$Gesamtverkehr + Helpfile_2020_2022$Gesamtverkehr
+
+KT_2020_Dietikon_2022 <- KT_2020_Dietikon_2022 %>% mutate(Zaehlst = "KT_2020_Dietikon_2022") %>% select(Zaehlst, everything())
+KT_2020_Dietikon_2022 <- KT_2020_Dietikon_2022 %>% mutate(NR = 2020) %>% select(NR, everything())
+KT_2020_Dietikon_2022 <- KT_2020_Dietikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_2020_Dietikon <- rbind.data.frame(KT_2020_Dietikon_2021,KT_2020_Dietikon_2022)
+```
+
+
+
+
+#2119 Schlieren
+```{r}
+# import the Excel files
+KT_2119_Schlieren_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2119@ - Rohdaten - Schlieren (ZH2119), Trottoir und Radstreifen, (2119_Schlieren).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2119_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2119@ - Rohdaten - Schlieren (ZH2119), Trottoir und Radstreifen, (2119_Schlieren).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_2119_Schlieren_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2119@ - Rohdaten - Schlieren (ZH2119), Trottoir und Radstreifen, (2119_Schlieren).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2119_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2119@ - Rohdaten - Schlieren (ZH2119), Trottoir und Radstreifen, (2119_Schlieren).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_2119_Schlieren_2021 <- KT_2119_Schlieren_2021[-1, ]
+Helpfile_2119_2021 <- Helpfile_2119_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2119_Schlieren_2021$Datum <- ymd(dmy(KT_2119_Schlieren_2021$Datum))
+Helpfile_2119_2021$Datum <- ymd(dmy(Helpfile_2119_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2119_Schlieren_2021$Date <- ymd_hm(paste(KT_2119_Schlieren_2021$Datum, substr(KT_2119_Schlieren_2021$Zeit, 1, 5)))
+Helpfile_2119_2021$Date <- ymd_hm(paste(Helpfile_2119_2021$Datum, substr(Helpfile_2119_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2119_Schlieren_2021 <- select(KT_2119_Schlieren_2021, Date, Gesamtverkehr)
+Helpfile_2119_2021 <- select(Helpfile_2119_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2119_Schlieren_2021$Gesamtverkehr <- KT_2119_Schlieren_2021$Gesamtverkehr + Helpfile_2119_2021$Gesamtverkehr
+
+KT_2119_Schlieren_2021 <- KT_2119_Schlieren_2021 %>% mutate(Zaehlst = "KT_2119_Schlieren_2021") %>% select(Zaehlst, everything())
+KT_2119_Schlieren_2021 <- KT_2119_Schlieren_2021 %>% mutate(NR = 2119) %>% select(NR, everything())
+KT_2119_Schlieren_2021 <- KT_2119_Schlieren_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_2119_Schlieren_2022 <- KT_2119_Schlieren_2022[-1, ]
+Helpfile_2119_2022 <- Helpfile_2119_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2119_Schlieren_2022$Datum <- ymd(dmy(KT_2119_Schlieren_2022$Datum))
+Helpfile_2119_2022$Datum <- ymd(dmy(Helpfile_2119_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2119_Schlieren_2022$Date <- ymd_hm(paste(KT_2119_Schlieren_2022$Datum, substr(KT_2119_Schlieren_2022$Zeit, 1, 5)))
+Helpfile_2119_2022$Date <- ymd_hm(paste(Helpfile_2119_2022$Datum, substr(Helpfile_2119_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2119_Schlieren_2022 <- select(KT_2119_Schlieren_2022, Date, Gesamtverkehr)
+Helpfile_2119_2022 <- select(Helpfile_2119_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2119_Schlieren_2022$Gesamtverkehr <- KT_2119_Schlieren_2022$Gesamtverkehr + Helpfile_2119_2022$Gesamtverkehr
+
+KT_2119_Schlieren_2022 <- KT_2119_Schlieren_2022 %>% mutate(Zaehlst = "KT_2119_Schlieren_2022") %>% select(Zaehlst, everything())
+KT_2119_Schlieren_2022 <- KT_2119_Schlieren_2022 %>% mutate(NR = 2119) %>% select(NR, everything())
+KT_2119_Schlieren_2022 <- KT_2119_Schlieren_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_2119_Schlieren <- rbind.data.frame(KT_2119_Schlieren_2021,KT_2119_Schlieren_2022)
+
+```
+
+#5019 Opfikon
+```{r}
+# import the Excel files
+KT_5019_Opfikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@5019@ - Rohdaten - Opfikon (ZH5019), Glattbrugg, Radstreifen, (5019_Opfikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_5019_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@5019@ - Rohdaten - Opfikon (ZH5019), Glattbrugg, Radstreifen, (5019_Opfikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_5019_Opfikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @5019@ - Rohdaten - Opfikon (ZH5019), Glattbrugg, Radstreifen, (5019_Opfikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_5019_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @5019@ - Rohdaten - Opfikon (ZH5019), Glattbrugg, Radstreifen, (5019_Opfikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_5019_Opfikon_2021 <- KT_5019_Opfikon_2021[-1, ]
+Helpfile_5019_2021 <- Helpfile_5019_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_5019_Opfikon_2021$Datum <- ymd(dmy(KT_5019_Opfikon_2021$Datum))
+Helpfile_5019_2021$Datum <- ymd(dmy(Helpfile_5019_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_5019_Opfikon_2021$Date <- ymd_hm(paste(KT_5019_Opfikon_2021$Datum, substr(KT_5019_Opfikon_2021$Zeit, 1, 5)))
+Helpfile_5019_2021$Date <- ymd_hm(paste(Helpfile_5019_2021$Datum, substr(Helpfile_5019_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_5019_Opfikon_2021 <- select(KT_5019_Opfikon_2021, Date, Gesamtverkehr)
+Helpfile_5019_2021 <- select(Helpfile_5019_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_5019_Opfikon_2021$Gesamtverkehr <- KT_5019_Opfikon_2021$Gesamtverkehr + Helpfile_5019_2021$Gesamtverkehr
+
+KT_5019_Opfikon_2021 <- KT_5019_Opfikon_2021 %>% mutate(Zaehlst = "KT_5019_Opfikon_2021") %>% select(Zaehlst, everything())
+KT_5019_Opfikon_2021 <- KT_5019_Opfikon_2021 %>% mutate(NR = 5019) %>% select(NR, everything())
+KT_5019_Opfikon_2021 <- KT_5019_Opfikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_5019_Opfikon_2022 <- KT_5019_Opfikon_2022[-1, ]
+Helpfile_5019_2022 <- Helpfile_5019_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_5019_Opfikon_2022$Datum <- ymd(dmy(KT_5019_Opfikon_2022$Datum))
+Helpfile_5019_2022$Datum <- ymd(dmy(Helpfile_5019_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_5019_Opfikon_2022$Date <- ymd_hm(paste(KT_5019_Opfikon_2022$Datum, substr(KT_5019_Opfikon_2022$Zeit, 1, 5)))
+Helpfile_5019_2022$Date <- ymd_hm(paste(Helpfile_5019_2022$Datum, substr(Helpfile_5019_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_5019_Opfikon_2022 <- select(KT_5019_Opfikon_2022, Date, Gesamtverkehr)
+Helpfile_5019_2022 <- select(Helpfile_5019_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_5019_Opfikon_2022$Gesamtverkehr <- KT_5019_Opfikon_2022$Gesamtverkehr + Helpfile_5019_2022$Gesamtverkehr
+
+KT_5019_Opfikon_2022 <- KT_5019_Opfikon_2022 %>% mutate(Zaehlst = "KT_5019_Opfikon_2022") %>% select(Zaehlst, everything())
+KT_5019_Opfikon_2022 <- KT_5019_Opfikon_2022 %>% mutate(NR = 5019) %>% select(NR, everything())
+KT_5019_Opfikon_2022 <- KT_5019_Opfikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_5019_Opfikon <- rbind.data.frame(KT_5019_Opfikon_2021,KT_5019_Opfikon_2022)
+```
+
+#5120 Dietikon
+```{r}
+
+# import the Excel files
+KT_5120_Dietikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@5120@ - Rohdaten - Dietikon (ZH5120), Radweg, (5120_Dietikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_5120_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@5120@ - Rohdaten - Dietikon (ZH5120), Radweg, (5120_Dietikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_5120_Dietikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @5120@ - Rohdaten - Dietikon (ZH5120), Radweg, (5120_Dietikon).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_5120_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @5120@ - Rohdaten - Dietikon (ZH5120), Radweg, (5120_Dietikon).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_5120_Dietikon_2021 <- KT_5120_Dietikon_2021[-1, ]
+Helpfile_5120_2021 <- Helpfile_5120_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_5120_Dietikon_2021$Datum <- ymd(dmy(KT_5120_Dietikon_2021$Datum))
+Helpfile_5120_2021$Datum <- ymd(dmy(Helpfile_5120_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_5120_Dietikon_2021$Date <- ymd_hm(paste(KT_5120_Dietikon_2021$Datum, substr(KT_5120_Dietikon_2021$Zeit, 1, 5)))
+Helpfile_5120_2021$Date <- ymd_hm(paste(Helpfile_5120_2021$Datum, substr(Helpfile_5120_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_5120_Dietikon_2021 <- select(KT_5120_Dietikon_2021, Date, Gesamtverkehr)
+Helpfile_5120_2021 <- select(Helpfile_5120_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_5120_Dietikon_2021$Gesamtverkehr <- KT_5120_Dietikon_2021$Gesamtverkehr + Helpfile_5120_2021$Gesamtverkehr
+
+KT_5120_Dietikon_2021 <- KT_5120_Dietikon_2021 %>% mutate(Zaehlst = "KT_5120_Dietikon_2021") %>% select(Zaehlst, everything())
+KT_5120_Dietikon_2021 <- KT_5120_Dietikon_2021 %>% mutate(NR = 5120) %>% select(NR, everything())
+KT_5120_Dietikon_2021 <- KT_5120_Dietikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_5120_Dietikon_2022 <- KT_5120_Dietikon_2022[-1, ]
+Helpfile_5120_2022 <- Helpfile_5120_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_5120_Dietikon_2022$Datum <- ymd(dmy(KT_5120_Dietikon_2022$Datum))
+Helpfile_5120_2022$Datum <- ymd(dmy(Helpfile_5120_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_5120_Dietikon_2022$Date <- ymd_hm(paste(KT_5120_Dietikon_2022$Datum, substr(KT_5120_Dietikon_2022$Zeit, 1, 5)))
+Helpfile_5120_2022$Date <- ymd_hm(paste(Helpfile_5120_2022$Datum, substr(Helpfile_5120_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_5120_Dietikon_2022 <- select(KT_5120_Dietikon_2022, Date, Gesamtverkehr)
+Helpfile_5120_2022 <- select(Helpfile_5120_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_5120_Dietikon_2022$Gesamtverkehr <- KT_5120_Dietikon_2022$Gesamtverkehr + Helpfile_5120_2022$Gesamtverkehr
+
+KT_5120_Dietikon_2022 <- KT_5120_Dietikon_2022 %>% mutate(Zaehlst = "KT_5120_Dietikon_2022") %>% select(Zaehlst, everything())
+KT_5120_Dietikon_2022 <- KT_5120_Dietikon_2022 %>% mutate(NR = 5120) %>% select(NR, everything())
+KT_5120_Dietikon_2022 <- KT_5120_Dietikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_5120_Dietikon <- rbind.data.frame(KT_5120_Dietikon_2021,KT_5120_Dietikon_2022)
+
+
+```
+
+
+#221 Dietikon
+```{r}
+# import the Excel files
+KT_221_Dietikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@221@ - Rohdaten - Dietikon (ZH0221), Radweg,  Alltagsroute 04_038.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_221_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@221@ - Rohdaten - Dietikon (ZH0221), Radweg,  Alltagsroute 04_038.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_221_Dietikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @221@ - Rohdaten - Dietikon (ZH0221), Radweg,  Alltagsroute 04_038.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_221_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @221@ - Rohdaten - Dietikon (ZH0221), Radweg,  Alltagsroute 04_038.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_221_Dietikon_2021 <- KT_221_Dietikon_2021[-1, ]
+Helpfile_221_2021 <- Helpfile_221_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_221_Dietikon_2021$Datum <- ymd(dmy(KT_221_Dietikon_2021$Datum))
+Helpfile_221_2021$Datum <- ymd(dmy(Helpfile_221_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_221_Dietikon_2021$Date <- ymd_hm(paste(KT_221_Dietikon_2021$Datum, substr(KT_221_Dietikon_2021$Zeit, 1, 5)))
+Helpfile_221_2021$Date <- ymd_hm(paste(Helpfile_221_2021$Datum, substr(Helpfile_221_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_221_Dietikon_2021 <- select(KT_221_Dietikon_2021, Date, Gesamtverkehr)
+Helpfile_221_2021 <- select(Helpfile_221_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_221_Dietikon_2021$Gesamtverkehr <- KT_221_Dietikon_2021$Gesamtverkehr + Helpfile_221_2021$Gesamtverkehr
+
+KT_221_Dietikon_2021 <- KT_221_Dietikon_2021 %>% mutate(Zaehlst = "KT_221_Dietikon_2021") %>% select(Zaehlst, everything())
+KT_221_Dietikon_2021 <- KT_221_Dietikon_2021 %>% mutate(NR = 221) %>% select(NR, everything())
+KT_221_Dietikon_2021 <- KT_221_Dietikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_221_Dietikon_2022 <- KT_221_Dietikon_2022[-1, ]
+Helpfile_221_2022 <- Helpfile_221_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_221_Dietikon_2022$Datum <- ymd(dmy(KT_221_Dietikon_2022$Datum))
+Helpfile_221_2022$Datum <- ymd(dmy(Helpfile_221_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_221_Dietikon_2022$Date <- ymd_hm(paste(KT_221_Dietikon_2022$Datum, substr(KT_221_Dietikon_2022$Zeit, 1, 5)))
+Helpfile_221_2022$Date <- ymd_hm(paste(Helpfile_221_2022$Datum, substr(Helpfile_221_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_221_Dietikon_2022 <- select(KT_221_Dietikon_2022, Date, Gesamtverkehr)
+Helpfile_221_2022 <- select(Helpfile_221_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_221_Dietikon_2022$Gesamtverkehr <- KT_221_Dietikon_2022$Gesamtverkehr + Helpfile_221_2022$Gesamtverkehr
+
+KT_221_Dietikon_2022 <- KT_221_Dietikon_2022 %>% mutate(Zaehlst = "KT_221_Dietikon_2022") %>% select(Zaehlst, everything())
+KT_221_Dietikon_2022 <- KT_221_Dietikon_2022 %>% mutate(NR = 221) %>% select(NR, everything())
+KT_221_Dietikon_2022 <- KT_221_Dietikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_221_Dietikon <- rbind.data.frame(KT_221_Dietikon_2021,KT_221_Dietikon_2022)
+
+```
+
+#1121 Dietikon
+```{r}
+# import the Excel files
+KT_1121_Dietikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1121@ - Rohdaten - Dietikon (ZH1121), Trottoir,  Alltagsroute 04_056.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1121_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@1121@ - Rohdaten - Dietikon (ZH1121), Trottoir,  Alltagsroute 04_056.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_1121_Dietikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1121@ - Rohdaten - Dietikon (ZH1121), Trottoir,  Alltagsroute 04_056.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_1121_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @1121@ - Rohdaten - Dietikon (ZH1121), Trottoir,  Alltagsroute 04_056.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_1121_Dietikon_2021 <- KT_1121_Dietikon_2021[-1, ]
+Helpfile_1121_2021 <- Helpfile_1121_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1121_Dietikon_2021$Datum <- ymd(dmy(KT_1121_Dietikon_2021$Datum))
+Helpfile_1121_2021$Datum <- ymd(dmy(Helpfile_1121_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1121_Dietikon_2021$Date <- ymd_hm(paste(KT_1121_Dietikon_2021$Datum, substr(KT_1121_Dietikon_2021$Zeit, 1, 5)))
+Helpfile_1121_2021$Date <- ymd_hm(paste(Helpfile_1121_2021$Datum, substr(Helpfile_1121_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1121_Dietikon_2021 <- select(KT_1121_Dietikon_2021, Date, Gesamtverkehr)
+Helpfile_1121_2021 <- select(Helpfile_1121_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1121_Dietikon_2021$Gesamtverkehr <- KT_1121_Dietikon_2021$Gesamtverkehr + Helpfile_1121_2021$Gesamtverkehr
+
+KT_1121_Dietikon_2021 <- KT_1121_Dietikon_2021 %>% mutate(Zaehlst = "KT_1121_Dietikon_2021") %>% select(Zaehlst, everything())
+KT_1121_Dietikon_2021 <- KT_1121_Dietikon_2021 %>% mutate(NR = 1121) %>% select(NR, everything())
+KT_1121_Dietikon_2021 <- KT_1121_Dietikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_1121_Dietikon_2022 <- KT_1121_Dietikon_2022[-1, ]
+Helpfile_1121_2022 <- Helpfile_1121_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_1121_Dietikon_2022$Datum <- ymd(dmy(KT_1121_Dietikon_2022$Datum))
+Helpfile_1121_2022$Datum <- ymd(dmy(Helpfile_1121_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_1121_Dietikon_2022$Date <- ymd_hm(paste(KT_1121_Dietikon_2022$Datum, substr(KT_1121_Dietikon_2022$Zeit, 1, 5)))
+Helpfile_1121_2022$Date <- ymd_hm(paste(Helpfile_1121_2022$Datum, substr(Helpfile_1121_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_1121_Dietikon_2022 <- select(KT_1121_Dietikon_2022, Date, Gesamtverkehr)
+Helpfile_1121_2022 <- select(Helpfile_1121_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_1121_Dietikon_2022$Gesamtverkehr <- KT_1121_Dietikon_2022$Gesamtverkehr + Helpfile_1121_2022$Gesamtverkehr
+
+KT_1121_Dietikon_2022 <- KT_1121_Dietikon_2022 %>% mutate(Zaehlst = "KT_1121_Dietikon_2022") %>% select(Zaehlst, everything())
+KT_1121_Dietikon_2022 <- KT_1121_Dietikon_2022 %>% mutate(NR = 1121) %>% select(NR, everything())
+KT_1121_Dietikon_2022 <- KT_1121_Dietikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_1121_Dietikon <- rbind.data.frame(KT_1121_Dietikon_2021,KT_1121_Dietikon_2022)
+
+```
+
+
+
+#421 Schlieren
+```{r}
+# import the Excel files
+KT_0421_Schlieren_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@421@ - Rohdaten - Schlieren (ZH0421), Radstreifen und Trottoir, Alltagsroute 04_030.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0421_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@421@ - Rohdaten - Schlieren (ZH0421), Radstreifen und Trottoir, Alltagsroute 04_030.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0421_Schlieren_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @421@ - Rohdaten - Schlieren (ZH0421), Radstreifen und Trottoir, Alltagsroute 04_030.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0421_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @421@ - Rohdaten - Schlieren (ZH0421), Radstreifen und Trottoir, Alltagsroute 04_030.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0421_Schlieren_2021 <- KT_0421_Schlieren_2021[-1, ]
+Helpfile_0421_2021 <- Helpfile_0421_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0421_Schlieren_2021$Datum <- ymd(dmy(KT_0421_Schlieren_2021$Datum))
+Helpfile_0421_2021$Datum <- ymd(dmy(Helpfile_0421_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0421_Schlieren_2021$Date <- ymd_hm(paste(KT_0421_Schlieren_2021$Datum, substr(KT_0421_Schlieren_2021$Zeit, 1, 5)))
+Helpfile_0421_2021$Date <- ymd_hm(paste(Helpfile_0421_2021$Datum, substr(Helpfile_0421_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0421_Schlieren_2021 <- select(KT_0421_Schlieren_2021, Date, Gesamtverkehr)
+Helpfile_0421_2021 <- select(Helpfile_0421_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0421_Schlieren_2021$Gesamtverkehr <- KT_0421_Schlieren_2021$Gesamtverkehr + Helpfile_0421_2021$Gesamtverkehr
+
+KT_0421_Schlieren_2021 <- KT_0421_Schlieren_2021 %>% mutate(Zaehlst = "KT_0421_Schlieren_2021") %>% select(Zaehlst, everything())
+KT_0421_Schlieren_2021 <- KT_0421_Schlieren_2021 %>% mutate(NR = 421) %>% select(NR, everything())
+KT_0421_Schlieren_2021 <- KT_0421_Schlieren_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0421_Schlieren_2022 <- KT_0421_Schlieren_2022[-1, ]
+Helpfile_0421_2022 <- Helpfile_0421_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0421_Schlieren_2022$Datum <- ymd(dmy(KT_0421_Schlieren_2022$Datum))
+Helpfile_0421_2022$Datum <- ymd(dmy(Helpfile_0421_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0421_Schlieren_2022$Date <- ymd_hm(paste(KT_0421_Schlieren_2022$Datum, substr(KT_0421_Schlieren_2022$Zeit, 1, 5)))
+Helpfile_0421_2022$Date <- ymd_hm(paste(Helpfile_0421_2022$Datum, substr(Helpfile_0421_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0421_Schlieren_2022 <- select(KT_0421_Schlieren_2022, Date, Gesamtverkehr)
+Helpfile_0421_2022 <- select(Helpfile_0421_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0421_Schlieren_2022$Gesamtverkehr <- KT_0421_Schlieren_2022$Gesamtverkehr + Helpfile_0421_2022$Gesamtverkehr
+
+KT_0421_Schlieren_2022 <- KT_0421_Schlieren_2022 %>% mutate(Zaehlst = "KT_0421_Schlieren_2022") %>% select(Zaehlst, everything())
+KT_0421_Schlieren_2022 <- KT_0421_Schlieren_2022 %>% mutate(NR = 421) %>% select(NR, everything())
+KT_0421_Schlieren_2022 <- KT_0421_Schlieren_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0421_Schlieren <- rbind.data.frame(KT_0421_Schlieren_2021,KT_0421_Schlieren_2022)
+```
+
+
+
+#521 Schlieren
+```{r}
+# import the Excel files
+KT_0521_Schlieren_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@521@ - Rohdaten - Schlieren (ZH0521), Trottoir, Alltagsroute 04_030.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0521_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@521@ - Rohdaten - Schlieren (ZH0521), Trottoir, Alltagsroute 04_030.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0521_Schlieren_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @521@ - Rohdaten - Schlieren (ZH0521), Trottoir, Alltagsroute 04_030.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0521_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @521@ - Rohdaten - Schlieren (ZH0521), Trottoir, Alltagsroute 04_030.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0521_Schlieren_2021 <- KT_0521_Schlieren_2021[-1, ]
+Helpfile_0521_2021 <- Helpfile_0521_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0521_Schlieren_2021$Datum <- ymd(dmy(KT_0521_Schlieren_2021$Datum))
+Helpfile_0521_2021$Datum <- ymd(dmy(Helpfile_0521_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0521_Schlieren_2021$Date <- ymd_hm(paste(KT_0521_Schlieren_2021$Datum, substr(KT_0521_Schlieren_2021$Zeit, 1, 5)))
+Helpfile_0521_2021$Date <- ymd_hm(paste(Helpfile_0521_2021$Datum, substr(Helpfile_0521_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0521_Schlieren_2021 <- select(KT_0521_Schlieren_2021, Date, Gesamtverkehr)
+Helpfile_0521_2021 <- select(Helpfile_0521_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0521_Schlieren_2021$Gesamtverkehr <- KT_0521_Schlieren_2021$Gesamtverkehr + Helpfile_0521_2021$Gesamtverkehr
+
+KT_0521_Schlieren_2021 <- KT_0521_Schlieren_2021 %>% mutate(Zaehlst = "KT_0521_Schlieren_2021") %>% select(Zaehlst, everything())
+KT_0521_Schlieren_2021 <- KT_0521_Schlieren_2021 %>% mutate(NR = 521) %>% select(NR, everything())
+KT_0521_Schlieren_2021 <- KT_0521_Schlieren_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0521_Schlieren_2022 <- KT_0521_Schlieren_2022[-1, ]
+Helpfile_0521_2022 <- Helpfile_0521_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0521_Schlieren_2022$Datum <- ymd(dmy(KT_0521_Schlieren_2022$Datum))
+Helpfile_0521_2022$Datum <- ymd(dmy(Helpfile_0521_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0521_Schlieren_2022$Date <- ymd_hm(paste(KT_0521_Schlieren_2022$Datum, substr(KT_0521_Schlieren_2022$Zeit, 1, 5)))
+Helpfile_0521_2022$Date <- ymd_hm(paste(Helpfile_0521_2022$Datum, substr(Helpfile_0521_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0521_Schlieren_2022 <- select(KT_0521_Schlieren_2022, Date, Gesamtverkehr)
+Helpfile_0521_2022 <- select(Helpfile_0521_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0521_Schlieren_2022$Gesamtverkehr <- KT_0521_Schlieren_2022$Gesamtverkehr + Helpfile_0521_2022$Gesamtverkehr
+
+KT_0521_Schlieren_2022 <- KT_0521_Schlieren_2022 %>% mutate(Zaehlst = "KT_0521_Schlieren_2022") %>% select(Zaehlst, everything())
+KT_0521_Schlieren_2022 <- KT_0521_Schlieren_2022 %>% mutate(NR = 521) %>% select(NR, everything())
+KT_0521_Schlieren_2022 <- KT_0521_Schlieren_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0521_Schlieren <- rbind.data.frame(KT_0521_Schlieren_2021,KT_0521_Schlieren_2022)
+```
+
+#619 Dübendorf
+```{r}
+# import the Excel files
+KT_0619_Duebendorf_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@619@ - Rohdaten - Dübendorf (ZH0619), Radweg, (0619_Dübendorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0619_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@619@ - Rohdaten - Dübendorf (ZH0619), Radweg, (0619_Dübendorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0619_Duebendorf_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @619@ - Rohdaten - Dübendorf (ZH0619), Radweg, (0619_Dübendorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0619_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @619@ - Rohdaten - Dübendorf (ZH0619), Radweg, (0619_Dübendorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0619_Duebendorf_2021 <- KT_0619_Duebendorf_2021[-1, ]
+Helpfile_0619_2021 <- Helpfile_0619_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0619_Duebendorf_2021$Datum <- ymd(dmy(KT_0619_Duebendorf_2021$Datum))
+Helpfile_0619_2021$Datum <- ymd(dmy(Helpfile_0619_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0619_Duebendorf_2021$Date <- ymd_hm(paste(KT_0619_Duebendorf_2021$Datum, substr(KT_0619_Duebendorf_2021$Zeit, 1, 5)))
+Helpfile_0619_2021$Date <- ymd_hm(paste(Helpfile_0619_2021$Datum, substr(Helpfile_0619_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0619_Duebendorf_2021 <- select(KT_0619_Duebendorf_2021, Date, Gesamtverkehr)
+Helpfile_0619_2021 <- select(Helpfile_0619_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0619_Duebendorf_2021$Gesamtverkehr <- KT_0619_Duebendorf_2021$Gesamtverkehr + Helpfile_0619_2021$Gesamtverkehr
+
+KT_0619_Duebendorf_2021 <- KT_0619_Duebendorf_2021 %>% mutate(Zaehlst = "KT_0619_Duebendorf_2021") %>% select(Zaehlst, everything())
+KT_0619_Duebendorf_2021 <- KT_0619_Duebendorf_2021 %>% mutate(NR = 619) %>% select(NR, everything())
+KT_0619_Duebendorf_2021 <- KT_0619_Duebendorf_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0619_Duebendorf_2022 <- KT_0619_Duebendorf_2022[-1, ]
+Helpfile_0619_2022 <- Helpfile_0619_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0619_Duebendorf_2022$Datum <- ymd(dmy(KT_0619_Duebendorf_2022$Datum))
+Helpfile_0619_2022$Datum <- ymd(dmy(Helpfile_0619_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0619_Duebendorf_2022$Date <- ymd_hm(paste(KT_0619_Duebendorf_2022$Datum, substr(KT_0619_Duebendorf_2022$Zeit, 1, 5)))
+Helpfile_0619_2022$Date <- ymd_hm(paste(Helpfile_0619_2022$Datum, substr(Helpfile_0619_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0619_Duebendorf_2022 <- select(KT_0619_Duebendorf_2022, Date, Gesamtverkehr)
+Helpfile_0619_2022 <- select(Helpfile_0619_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0619_Duebendorf_2022$Gesamtverkehr <- KT_0619_Duebendorf_2022$Gesamtverkehr + Helpfile_0619_2022$Gesamtverkehr
+
+KT_0619_Duebendorf_2022 <- KT_0619_Duebendorf_2022 %>% mutate(Zaehlst = "KT_0619_Duebendorf_2022") %>% select(Zaehlst, everything())
+KT_0619_Duebendorf_2022 <- KT_0619_Duebendorf_2022 %>% mutate(NR = 619) %>% select(NR, everything())
+KT_0619_Duebendorf_2022 <- KT_0619_Duebendorf_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0619_Duebendorf <- rbind.data.frame(KT_0619_Duebendorf_2021,KT_0619_Duebendorf_2022)
+```
+
+
+
+
+
+#2221 Dübendorf
+```{r}
+# import the Excel files
+# KT_2221_Duebendorf_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2221@ - Rohdaten - Dübendorf  (ZH2221), Fischerweg .xlsx", sheet = 1, skip = 9, col_names= TRUE)
+# Helpfile_2221_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2221@ - Rohdaten - Dübendorf  (ZH2221), Fischerweg .xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_2221_Duebendorf_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2221@ - Rohdaten - Dübendorf  (ZH2221), Fischerweg .xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2221_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2221@ - Rohdaten - Dübendorf  (ZH2221), Fischerweg .xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_2221_Duebendorf_2022 <- KT_2221_Duebendorf_2022[-1, ]
+Helpfile_2221_2022 <- Helpfile_2221_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2221_Duebendorf_2022$Datum <- ymd(dmy(KT_2221_Duebendorf_2022$Datum))
+Helpfile_2221_2022$Datum <- ymd(dmy(Helpfile_2221_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2221_Duebendorf_2022$Date <- ymd_hm(paste(KT_2221_Duebendorf_2022$Datum, substr(KT_2221_Duebendorf_2022$Zeit, 1, 5)))
+Helpfile_2221_2022$Date <- ymd_hm(paste(Helpfile_2221_2022$Datum, substr(Helpfile_2221_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2221_Duebendorf_2022 <- select(KT_2221_Duebendorf_2022, Date, Gesamtverkehr)
+Helpfile_2221_2022 <- select(Helpfile_2221_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2221_Duebendorf_2022$Gesamtverkehr <- Helpfile_2221_2022$Gesamtverkehr + KT_2221_Duebendorf_2022$Gesamtverkehr
+
+KT_2221_Duebendorf_2022 <- KT_2221_Duebendorf_2022 %>% mutate(Zaehlst = "KT_2221_Duebendorf_2022") %>% select(Zaehlst, everything())
+KT_2221_Duebendorf_2022 <- KT_2221_Duebendorf_2022 %>% mutate(NR = 2221) %>% select(NR, everything())
+KT_2221_Duebendorf_2022 <- KT_2221_Duebendorf_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_2221_Duebendorf <- KT_2221_Duebendorf_2022
+```
+
+#2421 Zürich, Glattufer
+```{r}
+# import the Excel files
+KT_2421_Zuerich_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2421@ - Rohdaten - Zürich (ZH2421), Glattuferweg.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2421_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2421@ - Rohdaten - Zürich (ZH2421), Glattuferweg.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_2421_Zuerich_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2421@ - Rohdaten - Zürich (ZH2421), Glattuferweg.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2421_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2421@ - Rohdaten - Zürich (ZH2421), Glattuferweg.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_2421_Zuerich_2021 <- KT_2421_Zuerich_2021[-1, ]
+Helpfile_2421_2021 <- Helpfile_2421_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2421_Zuerich_2021$Datum <- ymd(dmy(KT_2421_Zuerich_2021$Datum))
+Helpfile_2421_2021$Datum <- ymd(dmy(Helpfile_2421_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2421_Zuerich_2021$Date <- ymd_hm(paste(KT_2421_Zuerich_2021$Datum, substr(KT_2421_Zuerich_2021$Zeit, 1, 5)))
+Helpfile_2421_2021$Date <- ymd_hm(paste(Helpfile_2421_2021$Datum, substr(Helpfile_2421_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2421_Zuerich_2021 <- select(KT_2421_Zuerich_2021, Date, Gesamtverkehr)
+Helpfile_2421_2021 <- select(Helpfile_2421_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2421_Zuerich_2021$Gesamtverkehr <- KT_2421_Zuerich_2021$Gesamtverkehr + Helpfile_2421_2021$Gesamtverkehr
+
+KT_2421_Zuerich_2021 <- KT_2421_Zuerich_2021 %>% mutate(Zaehlst = "KT_2421_Zuerich_2021") %>% select(Zaehlst, everything())
+KT_2421_Zuerich_2021 <- KT_2421_Zuerich_2021 %>% mutate(NR = 2421) %>% select(NR, everything())
+KT_2421_Zuerich_2021 <- KT_2421_Zuerich_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_2421_Zuerich_2022 <- KT_2421_Zuerich_2022[-1, ]
+Helpfile_2421_2022 <- Helpfile_2421_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2421_Zuerich_2022$Datum <- ymd(dmy(KT_2421_Zuerich_2022$Datum))
+Helpfile_2421_2022$Datum <- ymd(dmy(Helpfile_2421_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2421_Zuerich_2022$Date <- ymd_hm(paste(KT_2421_Zuerich_2022$Datum, substr(KT_2421_Zuerich_2022$Zeit, 1, 5)))
+Helpfile_2421_2022$Date <- ymd_hm(paste(Helpfile_2421_2022$Datum, substr(Helpfile_2421_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2421_Zuerich_2022 <- select(KT_2421_Zuerich_2022, Date, Gesamtverkehr)
+Helpfile_2421_2022 <- select(Helpfile_2421_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2421_Zuerich_2022$Gesamtverkehr <- KT_2421_Zuerich_2022$Gesamtverkehr + Helpfile_2421_2022$Gesamtverkehr
+
+KT_2421_Zuerich_2022 <- KT_2421_Zuerich_2022 %>% mutate(Zaehlst = "KT_2421_Zuerich_2022") %>% select(Zaehlst, everything())
+KT_2421_Zuerich_2022 <- KT_2421_Zuerich_2022 %>% mutate(NR = 2421) %>% select(NR, everything())
+KT_2421_Zuerich_2022 <- KT_2421_Zuerich_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_2421_Zuerich <- rbind.data.frame(KT_2421_Zuerich_2021,KT_2421_Zuerich_2022)
+```
+
+#2521 Opfikon, Glattuferweg Zunstrasse
+```{r}
+# import the Excel files
+KT_2521_Opfikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2521@ - Rohdaten - Opfikon (ZH2521), Glattuferweg, Route 02_125.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2521_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2521@ - Rohdaten - Opfikon (ZH2521), Glattuferweg, Route 02_125.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_2521_Opfikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2521@ - Rohdaten - Opfikon (ZH2521), Glattuferweg, Route 02_125.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2521_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2521@ - Rohdaten - Opfikon (ZH2521), Glattuferweg, Route 02_125.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_2521_Opfikon_2021 <- KT_2521_Opfikon_2021[-1, ]
+Helpfile_2521_2021 <- Helpfile_2521_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2521_Opfikon_2021$Datum <- ymd(dmy(KT_2521_Opfikon_2021$Datum))
+Helpfile_2521_2021$Datum <- ymd(dmy(Helpfile_2521_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2521_Opfikon_2021$Date <- ymd_hm(paste(KT_2521_Opfikon_2021$Datum, substr(KT_2521_Opfikon_2021$Zeit, 1, 5)))
+Helpfile_2521_2021$Date <- ymd_hm(paste(Helpfile_2521_2021$Datum, substr(Helpfile_2521_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2521_Opfikon_2021 <- select(KT_2521_Opfikon_2021, Date, Gesamtverkehr)
+Helpfile_2521_2021 <- select(Helpfile_2521_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2521_Opfikon_2021$Gesamtverkehr <- KT_2521_Opfikon_2021$Gesamtverkehr + Helpfile_2521_2021$Gesamtverkehr
+
+KT_2521_Opfikon_2021 <- KT_2521_Opfikon_2021 %>% mutate(Zaehlst = "KT_2521_Opfikon_2021") %>% select(Zaehlst, everything())
+KT_2521_Opfikon_2021 <- KT_2521_Opfikon_2021 %>% mutate(NR = 2521) %>% select(NR, everything())
+KT_2521_Opfikon_2021 <- KT_2521_Opfikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_2521_Opfikon_2022 <- KT_2521_Opfikon_2022[-1, ]
+Helpfile_2521_2022 <- Helpfile_2521_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2521_Opfikon_2022$Datum <- ymd(dmy(KT_2521_Opfikon_2022$Datum))
+Helpfile_2521_2022$Datum <- ymd(dmy(Helpfile_2521_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2521_Opfikon_2022$Date <- ymd_hm(paste(KT_2521_Opfikon_2022$Datum, substr(KT_2521_Opfikon_2022$Zeit, 1, 5)))
+Helpfile_2521_2022$Date <- ymd_hm(paste(Helpfile_2521_2022$Datum, substr(Helpfile_2521_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2521_Opfikon_2022 <- select(KT_2521_Opfikon_2022, Date, Gesamtverkehr)
+Helpfile_2521_2022 <- select(Helpfile_2521_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2521_Opfikon_2022$Gesamtverkehr <- KT_2521_Opfikon_2022$Gesamtverkehr + Helpfile_2521_2022$Gesamtverkehr
+
+KT_2521_Opfikon_2022 <- KT_2521_Opfikon_2022 %>% mutate(Zaehlst = "KT_2521_Opfikon_2022") %>% select(Zaehlst, everything())
+KT_2521_Opfikon_2022 <- KT_2521_Opfikon_2022 %>% mutate(NR = 2521) %>% select(NR, everything())
+KT_2521_Opfikon_2022 <- KT_2521_Opfikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_2521_Opfikon <- rbind.data.frame(KT_2521_Opfikon_2021,KT_2521_Opfikon_2022)
+```
+#2621 Opfikon, Glattuferweg Nord
+```{r}
+# import the Excel files
+KT_2621_Opfikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2621@ - Rohdaten - Opfikon (ZH2621), Glattuferweg Nord.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2621_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2621@ - Rohdaten - Opfikon (ZH2621), Glattuferweg Nord.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_2621_Opfikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2621@ - Rohdaten - Opfikon (ZH2621), Glattuferweg Nord.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2621_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2621@ - Rohdaten - Opfikon (ZH2621), Glattuferweg Nord.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_2621_Opfikon_2021 <- KT_2621_Opfikon_2021[-1, ]
+Helpfile_2621_2021 <- Helpfile_2621_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2621_Opfikon_2021$Datum <- ymd(dmy(KT_2621_Opfikon_2021$Datum))
+Helpfile_2621_2021$Datum <- ymd(dmy(Helpfile_2621_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2621_Opfikon_2021$Date <- ymd_hm(paste(KT_2621_Opfikon_2021$Datum, substr(KT_2621_Opfikon_2021$Zeit, 1, 5)))
+Helpfile_2621_2021$Date <- ymd_hm(paste(Helpfile_2621_2021$Datum, substr(Helpfile_2621_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2621_Opfikon_2021 <- select(KT_2621_Opfikon_2021, Date, Gesamtverkehr)
+Helpfile_2621_2021 <- select(Helpfile_2621_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2621_Opfikon_2021$Gesamtverkehr <- KT_2621_Opfikon_2021$Gesamtverkehr + Helpfile_2621_2021$Gesamtverkehr
+
+KT_2621_Opfikon_2021 <- KT_2621_Opfikon_2021 %>% mutate(Zaehlst = "KT_2621_Opfikon_2021") %>% select(Zaehlst, everything())
+KT_2621_Opfikon_2021 <- KT_2621_Opfikon_2021 %>% mutate(NR = 2621) %>% select(NR, everything())
+KT_2621_Opfikon_2021 <- KT_2621_Opfikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_2621_Opfikon_2022 <- KT_2621_Opfikon_2022[-1, ]
+Helpfile_2621_2022 <- Helpfile_2621_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2621_Opfikon_2022$Datum <- ymd(dmy(KT_2621_Opfikon_2022$Datum))
+Helpfile_2621_2022$Datum <- ymd(dmy(Helpfile_2621_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2621_Opfikon_2022$Date <- ymd_hm(paste(KT_2621_Opfikon_2022$Datum, substr(KT_2621_Opfikon_2022$Zeit, 1, 5)))
+Helpfile_2621_2022$Date <- ymd_hm(paste(Helpfile_2621_2022$Datum, substr(Helpfile_2621_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2621_Opfikon_2022 <- select(KT_2621_Opfikon_2022, Date, Gesamtverkehr)
+Helpfile_2621_2022 <- select(Helpfile_2621_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2621_Opfikon_2022$Gesamtverkehr <- KT_2621_Opfikon_2022$Gesamtverkehr + Helpfile_2621_2022$Gesamtverkehr
+
+KT_2621_Opfikon_2022 <- KT_2621_Opfikon_2022 %>% mutate(Zaehlst = "KT_2621_Opfikon_2022") %>% select(Zaehlst, everything())
+KT_2621_Opfikon_2022 <- KT_2621_Opfikon_2022 %>% mutate(NR = 2621) %>% select(NR, everything())
+KT_2621_Opfikon_2022 <- KT_2621_Opfikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_2621_Opfikon <- rbind.data.frame(KT_2621_Opfikon_2021,KT_2621_Opfikon_2022)
+```
+#2721 Opfikon, Glattuferweg Süd
+```{r}
+# import the Excel files
+KT_2721_Opfikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2721@ - Rohdaten - Opfikon (ZH2721), Glattuferweg Süd, Route 02_122.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2721_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2721@ - Rohdaten - Opfikon (ZH2721), Glattuferweg Süd, Route 02_122.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_2721_Opfikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2721@ - Rohdaten - Opfikon (ZH2721), Glattuferweg Süd, Route 02_122.xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2721_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2721@ - Rohdaten - Opfikon (ZH2721), Glattuferweg Süd, Route 02_122.xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_2721_Opfikon_2021 <- KT_2721_Opfikon_2021[-1, ]
+Helpfile_2721_2021 <- Helpfile_2721_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2721_Opfikon_2021$Datum <- ymd(dmy(KT_2721_Opfikon_2021$Datum))
+Helpfile_2721_2021$Datum <- ymd(dmy(Helpfile_2721_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2721_Opfikon_2021$Date <- ymd_hm(paste(KT_2721_Opfikon_2021$Datum, substr(KT_2721_Opfikon_2021$Zeit, 1, 5)))
+Helpfile_2721_2021$Date <- ymd_hm(paste(Helpfile_2721_2021$Datum, substr(Helpfile_2721_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2721_Opfikon_2021 <- select(KT_2721_Opfikon_2021, Date, Gesamtverkehr)
+Helpfile_2721_2021 <- select(Helpfile_2721_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2721_Opfikon_2021$Gesamtverkehr <- KT_2721_Opfikon_2021$Gesamtverkehr + Helpfile_2721_2021$Gesamtverkehr
+
+KT_2721_Opfikon_2021 <- KT_2721_Opfikon_2021 %>% mutate(Zaehlst = "KT_2721_Opfikon_2021") %>% select(Zaehlst, everything())
+KT_2721_Opfikon_2021 <- KT_2721_Opfikon_2021 %>% mutate(NR = 2721) %>% select(NR, everything())
+KT_2721_Opfikon_2021 <- KT_2721_Opfikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_2721_Opfikon_2022 <- KT_2721_Opfikon_2022[-1, ]
+Helpfile_2721_2022 <- Helpfile_2721_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2721_Opfikon_2022$Datum <- ymd(dmy(KT_2721_Opfikon_2022$Datum))
+Helpfile_2721_2022$Datum <- ymd(dmy(Helpfile_2721_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2721_Opfikon_2022$Date <- ymd_hm(paste(KT_2721_Opfikon_2022$Datum, substr(KT_2721_Opfikon_2022$Zeit, 1, 5)))
+Helpfile_2721_2022$Date <- ymd_hm(paste(Helpfile_2721_2022$Datum, substr(Helpfile_2721_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2721_Opfikon_2022 <- select(KT_2721_Opfikon_2022, Date, Gesamtverkehr)
+Helpfile_2721_2022 <- select(Helpfile_2721_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2721_Opfikon_2022$Gesamtverkehr <- KT_2721_Opfikon_2022$Gesamtverkehr + Helpfile_2721_2022$Gesamtverkehr
+
+KT_2721_Opfikon_2022 <- KT_2721_Opfikon_2022 %>% mutate(Zaehlst = "KT_2721_Opfikon_2022") %>% select(Zaehlst, everything())
+KT_2721_Opfikon_2022 <- KT_2721_Opfikon_2022 %>% mutate(NR = 2721) %>% select(NR, everything())
+KT_2721_Opfikon_2022 <- KT_2721_Opfikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_2721_Opfikon <- rbind.data.frame(KT_2721_Opfikon_2021,KT_2721_Opfikon_2022)
+```
+
+#616 Regensdorf
+```{r}
+# import the Excel files
+KT_0616_Regensdorf_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@616@ - Rohdaten - Regensdorf (ZH0616), Radweg, (616_Regensdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0616_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@616@ - Rohdaten - Regensdorf (ZH0616), Radweg, (616_Regensdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0616_Regensdorf_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @616@ - Rohdaten - Regensdorf (ZH0616), Radweg, (616_Regensdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0616_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @616@ - Rohdaten - Regensdorf (ZH0616), Radweg, (616_Regensdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0616_Regensdorf_2021 <- KT_0616_Regensdorf_2021[-1, ]
+Helpfile_0616_2021 <- Helpfile_0616_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0616_Regensdorf_2021$Datum <- ymd(dmy(KT_0616_Regensdorf_2021$Datum))
+Helpfile_0616_2021$Datum <- ymd(dmy(Helpfile_0616_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0616_Regensdorf_2021$Date <- ymd_hm(paste(KT_0616_Regensdorf_2021$Datum, substr(KT_0616_Regensdorf_2021$Zeit, 1, 5)))
+Helpfile_0616_2021$Date <- ymd_hm(paste(Helpfile_0616_2021$Datum, substr(Helpfile_0616_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0616_Regensdorf_2021 <- select(KT_0616_Regensdorf_2021, Date, Gesamtverkehr)
+Helpfile_0616_2021 <- select(Helpfile_0616_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0616_Regensdorf_2021$Gesamtverkehr <- KT_0616_Regensdorf_2021$Gesamtverkehr + Helpfile_0616_2021$Gesamtverkehr
+
+KT_0616_Regensdorf_2021 <- KT_0616_Regensdorf_2021 %>% mutate(Zaehlst = "KT_0616_Regensdorf_2021") %>% select(Zaehlst, everything())
+KT_0616_Regensdorf_2021 <- KT_0616_Regensdorf_2021 %>% mutate(NR = 616) %>% select(NR, everything())
+KT_0616_Regensdorf_2021 <- KT_0616_Regensdorf_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0616_Regensdorf_2022 <- KT_0616_Regensdorf_2022[-1, ]
+Helpfile_0616_2022 <- Helpfile_0616_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0616_Regensdorf_2022$Datum <- ymd(dmy(KT_0616_Regensdorf_2022$Datum))
+Helpfile_0616_2022$Datum <- ymd(dmy(Helpfile_0616_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0616_Regensdorf_2022$Date <- ymd_hm(paste(KT_0616_Regensdorf_2022$Datum, substr(KT_0616_Regensdorf_2022$Zeit, 1, 5)))
+Helpfile_0616_2022$Date <- ymd_hm(paste(Helpfile_0616_2022$Datum, substr(Helpfile_0616_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0616_Regensdorf_2022 <- select(KT_0616_Regensdorf_2022, Date, Gesamtverkehr)
+Helpfile_0616_2022 <- select(Helpfile_0616_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0616_Regensdorf_2022$Gesamtverkehr <- KT_0616_Regensdorf_2022$Gesamtverkehr + Helpfile_0616_2022$Gesamtverkehr
+
+KT_0616_Regensdorf_2022 <- KT_0616_Regensdorf_2022 %>% mutate(Zaehlst = "KT_0616_Regensdorf_2022") %>% select(Zaehlst, everything())
+KT_0616_Regensdorf_2022 <- KT_0616_Regensdorf_2022 %>% mutate(NR = 616) %>% select(NR, everything())
+KT_0616_Regensdorf_2022 <- KT_0616_Regensdorf_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0616_Regensdorf <- rbind.data.frame(KT_0616_Regensdorf_2021,KT_0616_Regensdorf_2022)
+```
+
+
+#716 Regensdorf
+```{r}
+# import the Excel files
+KT_0716_Regensdorf_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@716@ - Rohdaten - Regensdorf (ZH0716), Radweg, (716_Regensdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0716_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@716@ - Rohdaten - Regensdorf (ZH0716), Radweg, (716_Regensdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0716_Regensdorf_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @716@ - Rohdaten - Regensdorf (ZH0716), Radweg, (716_Regensdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0716_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @716@ - Rohdaten - Regensdorf (ZH0716), Radweg, (716_Regensdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0716_Regensdorf_2021 <- KT_0716_Regensdorf_2021[-1, ]
+Helpfile_0716_2021 <- Helpfile_0716_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0716_Regensdorf_2021$Datum <- ymd(dmy(KT_0716_Regensdorf_2021$Datum))
+Helpfile_0716_2021$Datum <- ymd(dmy(Helpfile_0716_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0716_Regensdorf_2021$Date <- ymd_hm(paste(KT_0716_Regensdorf_2021$Datum, substr(KT_0716_Regensdorf_2021$Zeit, 1, 5)))
+Helpfile_0716_2021$Date <- ymd_hm(paste(Helpfile_0716_2021$Datum, substr(Helpfile_0716_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0716_Regensdorf_2021 <- select(KT_0716_Regensdorf_2021, Date, Gesamtverkehr)
+Helpfile_0716_2021 <- select(Helpfile_0716_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0716_Regensdorf_2021$Gesamtverkehr <- KT_0716_Regensdorf_2021$Gesamtverkehr + Helpfile_0716_2021$Gesamtverkehr
+
+KT_0716_Regensdorf_2021 <- KT_0716_Regensdorf_2021 %>% mutate(Zaehlst = "KT_0716_Regensdorf_2021") %>% select(Zaehlst, everything())
+KT_0716_Regensdorf_2021 <- KT_0716_Regensdorf_2021 %>% mutate(NR = 716) %>% select(NR, everything())
+KT_0716_Regensdorf_2021 <- KT_0716_Regensdorf_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0716_Regensdorf_2022 <- KT_0716_Regensdorf_2022[-1, ]
+Helpfile_0716_2022 <- Helpfile_0716_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0716_Regensdorf_2022$Datum <- ymd(dmy(KT_0716_Regensdorf_2022$Datum))
+Helpfile_0716_2022$Datum <- ymd(dmy(Helpfile_0716_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0716_Regensdorf_2022$Date <- ymd_hm(paste(KT_0716_Regensdorf_2022$Datum, substr(KT_0716_Regensdorf_2022$Zeit, 1, 5)))
+Helpfile_0716_2022$Date <- ymd_hm(paste(Helpfile_0716_2022$Datum, substr(Helpfile_0716_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0716_Regensdorf_2022 <- select(KT_0716_Regensdorf_2022, Date, Gesamtverkehr)
+Helpfile_0716_2022 <- select(Helpfile_0716_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0716_Regensdorf_2022$Gesamtverkehr <- KT_0716_Regensdorf_2022$Gesamtverkehr + Helpfile_0716_2022$Gesamtverkehr
+
+KT_0716_Regensdorf_2022 <- KT_0716_Regensdorf_2022 %>% mutate(Zaehlst = "KT_0716_Regensdorf_2022") %>% select(Zaehlst, everything())
+KT_0716_Regensdorf_2022 <- KT_0716_Regensdorf_2022 %>% mutate(NR = 716) %>% select(NR, everything())
+KT_0716_Regensdorf_2022 <- KT_0716_Regensdorf_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0716_Regensdorf <- rbind.data.frame(KT_0716_Regensdorf_2021,KT_0716_Regensdorf_2022)
+```
+#919 Zuerich Witikon
+```{r}
+# import the Excel files
+KT_0919_ZürichWitikon_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@919@ - Rohdaten - Zürich (ZH0919), Radweg, (919_Zürich).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0919_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@919@ - Rohdaten - Zürich (ZH0919), Radweg, (919_Zürich).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0919_ZürichWitikon_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @919@ - Rohdaten - Zürich (ZH0919), Radweg, (919_Zürich).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0919_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @919@ - Rohdaten - Zürich (ZH0919), Radweg, (919_Zürich).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0919_ZürichWitikon_2021 <- KT_0919_ZürichWitikon_2021[-1, ]
+Helpfile_0919_2021 <- Helpfile_0919_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0919_ZürichWitikon_2021$Datum <- ymd(dmy(KT_0919_ZürichWitikon_2021$Datum))
+Helpfile_0919_2021$Datum <- ymd(dmy(Helpfile_0919_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0919_ZürichWitikon_2021$Date <- ymd_hm(paste(KT_0919_ZürichWitikon_2021$Datum, substr(KT_0919_ZürichWitikon_2021$Zeit, 1, 5)))
+Helpfile_0919_2021$Date <- ymd_hm(paste(Helpfile_0919_2021$Datum, substr(Helpfile_0919_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0919_ZürichWitikon_2021 <- select(KT_0919_ZürichWitikon_2021, Date, Gesamtverkehr)
+Helpfile_0919_2021 <- select(Helpfile_0919_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0919_ZürichWitikon_2021$Gesamtverkehr <- KT_0919_ZürichWitikon_2021$Gesamtverkehr + Helpfile_0919_2021$Gesamtverkehr
+
+KT_0919_ZürichWitikon_2021 <- KT_0919_ZürichWitikon_2021 %>% mutate(Zaehlst = "KT_0919_ZürichWitikon_2021") %>% select(Zaehlst, everything())
+KT_0919_ZürichWitikon_2021 <- KT_0919_ZürichWitikon_2021 %>% mutate(NR = 919) %>% select(NR, everything())
+KT_0919_ZürichWitikon_2021 <- KT_0919_ZürichWitikon_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0919_ZürichWitikon_2022 <- KT_0919_ZürichWitikon_2022[-1, ]
+Helpfile_0919_2022 <- Helpfile_0919_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0919_ZürichWitikon_2022$Datum <- ymd(dmy(KT_0919_ZürichWitikon_2022$Datum))
+Helpfile_0919_2022$Datum <- ymd(dmy(Helpfile_0919_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0919_ZürichWitikon_2022$Date <- ymd_hm(paste(KT_0919_ZürichWitikon_2022$Datum, substr(KT_0919_ZürichWitikon_2022$Zeit, 1, 5)))
+Helpfile_0919_2022$Date <- ymd_hm(paste(Helpfile_0919_2022$Datum, substr(Helpfile_0919_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0919_ZürichWitikon_2022 <- select(KT_0919_ZürichWitikon_2022, Date, Gesamtverkehr)
+Helpfile_0919_2022 <- select(Helpfile_0919_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0919_ZürichWitikon_2022$Gesamtverkehr <- KT_0919_ZürichWitikon_2022$Gesamtverkehr + Helpfile_0919_2022$Gesamtverkehr
+
+KT_0919_ZürichWitikon_2022 <- KT_0919_ZürichWitikon_2022 %>% mutate(Zaehlst = "KT_0919_ZürichWitikon_2022") %>% select(Zaehlst, everything())
+KT_0919_ZürichWitikon_2022 <- KT_0919_ZürichWitikon_2022 %>% mutate(NR = 919) %>% select(NR, everything())
+KT_0919_ZürichWitikon_2022 <- KT_0919_ZürichWitikon_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0919_ZürichWitikon <- rbind.data.frame(KT_0919_ZürichWitikon_2021,KT_0919_ZürichWitikon_2022)
+```
+
+
+
+#317 Bassersdorf
+```{r}
+# import the Excel files
+KT_0317_Bassersdorf_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@317@ - Rohdaten - Bassersdorf (ZH0317), Radweg, (317_Bassersdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0317_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@317@ - Rohdaten - Bassersdorf (ZH0317), Radweg, (317_Bassersdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0317_Bassersdorf_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @317@ - Rohdaten - Bassersdorf (ZH0317), Radweg, (317_Bassersdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0317_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @317@ - Rohdaten - Bassersdorf (ZH0317), Radweg, (317_Bassersdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0317_Bassersdorf_2021 <- KT_0317_Bassersdorf_2021[-1, ]
+Helpfile_0317_2021 <- Helpfile_0317_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0317_Bassersdorf_2021$Datum <- ymd(dmy(KT_0317_Bassersdorf_2021$Datum))
+Helpfile_0317_2021$Datum <- ymd(dmy(Helpfile_0317_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0317_Bassersdorf_2021$Date <- ymd_hm(paste(KT_0317_Bassersdorf_2021$Datum, substr(KT_0317_Bassersdorf_2021$Zeit, 1, 5)))
+Helpfile_0317_2021$Date <- ymd_hm(paste(Helpfile_0317_2021$Datum, substr(Helpfile_0317_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0317_Bassersdorf_2021 <- select(KT_0317_Bassersdorf_2021, Date, Gesamtverkehr)
+Helpfile_0317_2021 <- select(Helpfile_0317_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0317_Bassersdorf_2021$Gesamtverkehr <- KT_0317_Bassersdorf_2021$Gesamtverkehr + Helpfile_0317_2021$Gesamtverkehr
+
+KT_0317_Bassersdorf_2021 <- KT_0317_Bassersdorf_2021 %>% mutate(Zaehlst = "KT_0317_Bassersdorf_2021") %>% select(Zaehlst, everything())
+KT_0317_Bassersdorf_2021 <- KT_0317_Bassersdorf_2021 %>% mutate(NR = 317) %>% select(NR, everything())
+KT_0317_Bassersdorf_2021 <- KT_0317_Bassersdorf_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0317_Bassersdorf_2022 <- KT_0317_Bassersdorf_2022[-1, ]
+Helpfile_0317_2022 <- Helpfile_0317_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0317_Bassersdorf_2022$Datum <- ymd(dmy(KT_0317_Bassersdorf_2022$Datum))
+Helpfile_0317_2022$Datum <- ymd(dmy(Helpfile_0317_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0317_Bassersdorf_2022$Date <- ymd_hm(paste(KT_0317_Bassersdorf_2022$Datum, substr(KT_0317_Bassersdorf_2022$Zeit, 1, 5)))
+Helpfile_0317_2022$Date <- ymd_hm(paste(Helpfile_0317_2022$Datum, substr(Helpfile_0317_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0317_Bassersdorf_2022 <- select(KT_0317_Bassersdorf_2022, Date, Gesamtverkehr)
+Helpfile_0317_2022 <- select(Helpfile_0317_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0317_Bassersdorf_2022$Gesamtverkehr <- KT_0317_Bassersdorf_2022$Gesamtverkehr + Helpfile_0317_2022$Gesamtverkehr
+
+KT_0317_Bassersdorf_2022 <- KT_0317_Bassersdorf_2022 %>% mutate(Zaehlst = "KT_0317_Bassersdorf_2022") %>% select(Zaehlst, everything())
+KT_0317_Bassersdorf_2022 <- KT_0317_Bassersdorf_2022 %>% mutate(NR = 317) %>% select(NR, everything())
+KT_0317_Bassersdorf_2022 <- KT_0317_Bassersdorf_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0317_Bassersdorf <- rbind.data.frame(KT_0317_Bassersdorf_2021,KT_0317_Bassersdorf_2022)
+```
+
+#2219 Basserdorf Feuerwehr
+```{r}
+# import the Excel files
+KT_2219_Bassersdorf_FW_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2219@ - Rohdaten - Bassersdorf (ZH2219), Radweg, (2219_Bassersdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2219_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@2219@ - Rohdaten - Bassersdorf (ZH2219), Radweg, (2219_Bassersdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_2219_Bassersdorf_FW_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2219@ - Rohdaten - Bassersdorf (ZH2219), Radweg, (2219_Bassersdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_2219_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @2219@ - Rohdaten - Bassersdorf (ZH2219), Radweg, (2219_Bassersdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_2219_Bassersdorf_FW_2021 <- KT_2219_Bassersdorf_FW_2021[-1, ]
+Helpfile_2219_2021 <- Helpfile_2219_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2219_Bassersdorf_FW_2021$Datum <- ymd(dmy(KT_2219_Bassersdorf_FW_2021$Datum))
+Helpfile_2219_2021$Datum <- ymd(dmy(Helpfile_2219_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2219_Bassersdorf_FW_2021$Date <- ymd_hm(paste(KT_2219_Bassersdorf_FW_2021$Datum, substr(KT_2219_Bassersdorf_FW_2021$Zeit, 1, 5)))
+Helpfile_2219_2021$Date <- ymd_hm(paste(Helpfile_2219_2021$Datum, substr(Helpfile_2219_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2219_Bassersdorf_FW_2021 <- select(KT_2219_Bassersdorf_FW_2021, Date, Gesamtverkehr)
+Helpfile_2219_2021 <- select(Helpfile_2219_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2219_Bassersdorf_FW_2021$Gesamtverkehr <- KT_2219_Bassersdorf_FW_2021$Gesamtverkehr + Helpfile_2219_2021$Gesamtverkehr
+
+KT_2219_Bassersdorf_FW_2021 <- KT_2219_Bassersdorf_FW_2021 %>% mutate(Zaehlst = "KT_2219_Bassersdorf_FW_2021") %>% select(Zaehlst, everything())
+KT_2219_Bassersdorf_FW_2021 <- KT_2219_Bassersdorf_FW_2021 %>% mutate(NR = 2219) %>% select(NR, everything())
+KT_2219_Bassersdorf_FW_2021 <- KT_2219_Bassersdorf_FW_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_2219_Bassersdorf_FW_2022 <- KT_2219_Bassersdorf_FW_2022[-1, ]
+Helpfile_2219_2022 <- Helpfile_2219_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_2219_Bassersdorf_FW_2022$Datum <- ymd(dmy(KT_2219_Bassersdorf_FW_2022$Datum))
+Helpfile_2219_2022$Datum <- ymd(dmy(Helpfile_2219_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_2219_Bassersdorf_FW_2022$Date <- ymd_hm(paste(KT_2219_Bassersdorf_FW_2022$Datum, substr(KT_2219_Bassersdorf_FW_2022$Zeit, 1, 5)))
+Helpfile_2219_2022$Date <- ymd_hm(paste(Helpfile_2219_2022$Datum, substr(Helpfile_2219_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_2219_Bassersdorf_FW_2022 <- select(KT_2219_Bassersdorf_FW_2022, Date, Gesamtverkehr)
+Helpfile_2219_2022 <- select(Helpfile_2219_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_2219_Bassersdorf_FW_2022$Gesamtverkehr <- KT_2219_Bassersdorf_FW_2022$Gesamtverkehr + Helpfile_2219_2022$Gesamtverkehr
+
+KT_2219_Bassersdorf_FW_2022 <- KT_2219_Bassersdorf_FW_2022 %>% mutate(Zaehlst = "KT_2219_Bassersdorf_FW_2022") %>% select(Zaehlst, everything())
+KT_2219_Bassersdorf_FW_2022 <- KT_2219_Bassersdorf_FW_2022 %>% mutate(NR = 2219) %>% select(NR, everything())
+KT_2219_Bassersdorf_FW_2022 <- KT_2219_Bassersdorf_FW_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_2219_Bassersdorf_FW <- rbind.data.frame(KT_2219_Bassersdorf_FW_2021,KT_2219_Bassersdorf_FW_2022)
+```
+
+#417 Kloten
+```{r}
+# import the Excel files
+KT_0417_Kloten_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@417@ - Rohdaten - Bassersdorf (ZH0417), Radweg, (417_Bassersdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0417_2021 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2021\\@417@ - Rohdaten - Bassersdorf (ZH0417), Radweg, (417_Bassersdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+KT_0417_Kloten_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @417@ - Rohdaten - Bassersdorf (ZH0417), Radweg, (417_Bassersdorf).xlsx", sheet = 1, skip = 9, col_names= TRUE)
+Helpfile_0417_2022 <- read_excel("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\ktzh\\2022\\B158wa1 - @417@ - Rohdaten - Bassersdorf (ZH0417), Radweg, (417_Bassersdorf).xlsx", sheet = 2,skip = 9, col_names = TRUE)
+
+
+
+# skip row 11
+KT_0417_Kloten_2021 <- KT_0417_Kloten_2021[-1, ]
+Helpfile_0417_2021 <- Helpfile_0417_2021[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0417_Kloten_2021$Datum <- ymd(dmy(KT_0417_Kloten_2021$Datum))
+Helpfile_0417_2021$Datum <- ymd(dmy(Helpfile_0417_2021$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0417_Kloten_2021$Date <- ymd_hm(paste(KT_0417_Kloten_2021$Datum, substr(KT_0417_Kloten_2021$Zeit, 1, 5)))
+Helpfile_0417_2021$Date <- ymd_hm(paste(Helpfile_0417_2021$Datum, substr(Helpfile_0417_2021$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0417_Kloten_2021 <- select(KT_0417_Kloten_2021, Date, Gesamtverkehr)
+Helpfile_0417_2021 <- select(Helpfile_0417_2021, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0417_Kloten_2021$Gesamtverkehr <- KT_0417_Kloten_2021$Gesamtverkehr + Helpfile_0417_2021$Gesamtverkehr
+
+KT_0417_Kloten_2021 <- KT_0417_Kloten_2021 %>% mutate(Zaehlst = "KT_0417_Kloten_2021") %>% select(Zaehlst, everything())
+KT_0417_Kloten_2021 <- KT_0417_Kloten_2021 %>% mutate(NR = 417) %>% select(NR, everything())
+KT_0417_Kloten_2021 <- KT_0417_Kloten_2021 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+## 2022 -----------------------------------------
+
+# skip row 11
+KT_0417_Kloten_2022 <- KT_0417_Kloten_2022[-1, ]
+Helpfile_0417_2022 <- Helpfile_0417_2022[-1, ]
+
+# convert the "Datum" column to the "yyyy/mm/dd" format
+KT_0417_Kloten_2022$Datum <- ymd(dmy(KT_0417_Kloten_2022$Datum))
+Helpfile_0417_2022$Datum <- ymd(dmy(Helpfile_0417_2022$Datum))
+
+# combine the "Datum" and "Zeit" columns into a single "Date" column
+KT_0417_Kloten_2022$Date <- ymd_hm(paste(KT_0417_Kloten_2022$Datum, substr(KT_0417_Kloten_2022$Zeit, 1, 5)))
+Helpfile_0417_2022$Date <- ymd_hm(paste(Helpfile_0417_2022$Datum, substr(Helpfile_0417_2022$Zeit, 1, 5)))
+
+# remove the "Datum" and "Zeit" columns
+KT_0417_Kloten_2022 <- select(KT_0417_Kloten_2022, Date, Gesamtverkehr)
+Helpfile_0417_2022 <- select(Helpfile_0417_2022, Date, Gesamtverkehr)
+
+
+# sum the "Gesamtverkehr" columns from both sheets
+KT_0417_Kloten_2022$Gesamtverkehr <- KT_0417_Kloten_2022$Gesamtverkehr + Helpfile_0417_2022$Gesamtverkehr
+
+KT_0417_Kloten_2022 <- KT_0417_Kloten_2022 %>% mutate(Zaehlst = "KT_0417_Kloten_2022") %>% select(Zaehlst, everything())
+KT_0417_Kloten_2022 <- KT_0417_Kloten_2022 %>% mutate(NR = 417) %>% select(NR, everything())
+KT_0417_Kloten_2022 <- KT_0417_Kloten_2022 %>% group_by(NR,Zaehlst, Date = floor_date(Date, "day")) %>% summarize(across(Gesamtverkehr, sum))
+
+# put together 2021&2022
+
+KT_0417_Kloten <- rbind.data.frame(KT_0417_Kloten_2021,KT_0417_Kloten_2022)
+```
+
+# add certain stations together and Merge ALL CANTON STATIONS
+```{r}
+# 421 & 521 Badenerstrasse Schlieren
+KT_0421_Schlieren <- inner_join(KT_0421_Schlieren, KT_0521_Schlieren, by= "Date")
+KT_0421_Schlieren <- KT_0421_Schlieren %>% mutate(Gesamtverkehr = Gesamtverkehr.x+Gesamtverkehr.y)
+KT_0421_Schlieren <- KT_0421_Schlieren %>% rename(NR = NR.x,
+                                                  Zaehlst = Zaehlst.x)
+KT_0421_Schlieren <- KT_0421_Schlieren %>% select(1,2,3,8)
+
+# 2020 & 5120 Dietikon Brücke
+KT_2020_Dietikon <- inner_join(KT_2020_Dietikon, KT_5120_Dietikon, by= "Date")
+KT_2020_Dietikon <- KT_2020_Dietikon %>% mutate(Gesamtverkehr = Gesamtverkehr.x+Gesamtverkehr.y)
+KT_2020_Dietikon <- KT_2020_Dietikon %>% rename(NR = NR.x,
+                                                  Zaehlst = Zaehlst.x)
+KT_2020_Dietikon <- KT_2020_Dietikon %>% select(1,2,3,8)
+
+# 1519 & 5019 Schaffhauserstr Glattbrugg
+
+KT_1519_Opfikon <- inner_join(KT_1519_Opfikon, KT_5019_Opfikon, by= "Date")
+KT_1519_Opfikon <- KT_1519_Opfikon %>% mutate(Gesamtverkehr = Gesamtverkehr.x+Gesamtverkehr.y)
+KT_1519_Opfikon <- KT_1519_Opfikon %>% rename(NR = NR.x,
+                                                  Zaehlst = Zaehlst.x)
+KT_1519_Opfikon <- KT_1519_Opfikon %>% select(1,2,3,8)
+
+# 1021 & 1121 Zürcherstrasse Dietikon
+
+KT_1021_Dietikon <- inner_join(KT_1021_Dietikon, KT_1121_Dietikon, by= "Date")
+KT_1021_Dietikon <- KT_1021_Dietikon %>% mutate(Gesamtverkehr = Gesamtverkehr.x+Gesamtverkehr.y)
+KT_1021_Dietikon <- KT_1021_Dietikon %>% rename(NR = NR.x,
+                                                  Zaehlst = Zaehlst.x)
+KT_1021_Dietikon <- KT_1021_Dietikon %>% select(1,2,3,8)
+
+
+
+counts_kanton <- rbind.data.frame(KT_0818_Schlieren,KT_0918_Schlieren,KT_1018_Dietikon,KT_1021_Dietikon,KT_1519_Opfikon,KT_1819_Kloten, KT_2020_Dietikon, KT_2119_Schlieren, KT_221_Dietikon, KT_0421_Schlieren, KT_0619_Duebendorf, KT_2221_Duebendorf,KT_2421_Zuerich, KT_2521_Opfikon, KT_2621_Opfikon, KT_2721_Opfikon, KT_0616_Regensdorf,KT_0716_Regensdorf, KT_0317_Bassersdorf, KT_0417_Kloten, KT_2219_Bassersdorf_FW, KT_0919_ZürichWitikon)
+
+canton_counts <- inner_join(counts_kanton, stations_kt, by= c("NR" = "KT_NR"))
+
+canton_counts <- canton_counts %>% filter(!is.na(Date))
+# Extract the town names from the 'Name' column
+canton_counts$town <- str_extract(canton_counts$Zaehlst, "(?<=_)[^_]+(?=_[[:digit:]]{4}$)")
+canton_counts <- canton_counts %>% rename(
+  "trips"= "Gesamtverkehr")
+canton_counts$Name <- ifelse(is.na(canton_counts$Name), canton_counts$town, canton_counts$Name)
+
+# stations_merge$Name <- ifelse(is.na(stations_merge$Name),stations_merge$bezeichnun, stations_merge$Name)
+
+# View the modified dataframe
+head(canton_counts)
+
+canton_counts_sf <- st_as_sf(canton_counts)
+
+#aggregate to years/months as overview
+canton_counts_month <- canton_counts
+canton_counts_month <- canton_counts_month %>% group_by(NR,Name, Date = floor_date(Date, "month")) %>%
+ summarize(across(trips, sum))
+
+canton_counts_month$NR <- as.character(canton_counts_month$NR)
+
+                              
+# final object of 22 Canton stations, showing for each stations the total ridership for each day in service of 2021&2022.georeferenced. 
+
+```
+
+#Merging data frames and sum some city stations
+```{r}
+
+stations_merge <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\counting stations\\stations_ids_03_27.shp")
+
+stations_merge$KT_NR <- ifelse(is.na(stations_merge$KT_NR),stations_merge$fk_zaehler, stations_merge$KT_NR)
+
+stations_merge$Name <- ifelse(is.na(stations_merge$Name),stations_merge$bezeichnun, stations_merge$Name)
+stations_merge[stations_merge$KT_NR == 919, "OBJECTID"] <- 70971
+stations_merge[stations_merge$KT_NR == 2219, "OBJECTID"] <- 9597
+stations_merge[stations_merge$KT_NR == "Y2H20114444", "OBJECTID"] <- 100010
+stations_merge[stations_merge$KT_NR == "Y2H16069943", "OBJECTID"] <- 64741
+
+
+
+stations_merge <- stations_merge %>% dplyr::select(1,8,2,9,11,22)
+stations_merge <- stations_merge %>% rename(ID = KT_NR)
+# corr_try[corr_try$OBJECTID == 99999, "ref_obj_ID"] <- 99999
+
+city_counts <- city_counts %>% rename(NR = FK_ZAEHLER,
+                                    Date = DATUM,
+                                    trips = VELO_total_corr)
+
+# sum limmatquai and hardbrücke
+# limmatquai
+city_counts_limmat <- city_counts %>% filter(NR == "Y2H19070585" | NR == "Y2H20083483")
+city_counts_limmat <- city_counts_limmat %>%
+  group_by(Date) %>%
+  mutate(trips_add = trips[2])
+
+city_counts_limmat <- city_counts_limmat %>% mutate(sum_trips = trips+trips_add)
+city_counts_limmat <- city_counts_limmat %>% filter(NR == "Y2H19070585")
+city_counts_limmat <- city_counts_limmat %>% rename(trips_1 = trips,
+  trips = sum_trips)
+city_counts <- city_counts %>% filter(!NR == "Y2H19070585" & !NR == "Y2H20083483")
+city_counts <- bind_rows(city_counts, city_counts_limmat, by=c("NR" = "NR"))
+
+
+#hardbrücke
+city_counts_hardbr <- city_counts %>% filter(NR == "Y2H16069942" | NR == "Y2H16069943")
+city_counts_hardbr <- city_counts_hardbr %>%
+  group_by(Date) %>%
+  mutate(trips_add = trips[2])
+
+city_counts_hardbr <- city_counts_hardbr %>% mutate(sum_trips = trips+trips_add)
+city_counts_hardbr <- city_counts_hardbr %>% filter(NR == "Y2H16069942")
+city_counts_hardbr <- city_counts_hardbr %>% rename(trips_2 = trips,
+  trips = sum_trips)
+city_counts <- city_counts %>% filter(!NR == "Y2H16069942" & !NR == "Y2H16069943")
+city_counts <- bind_rows(city_counts, city_counts_hardbr, by=c("NR" = "NR"))
+
+#langstrasse alle vier von 03-12/2022
+city_counts_langstr <- city_counts %>% filter(NR == "Y2H16039396" | NR == "Y2H19101255" |NR == "Y2H21056105"| NR == "Y2H21056106" | NR == "Y2H21111102")
+city_counts_langstr <- city_counts_langstr %>%
+  group_by(Date) %>%
+  mutate(n_stations = n(),
+         trips_add = sum(trips))
+
+city_counts_langstr <- city_counts_langstr %>% filter(n_stations == 4)
+city_counts_langstr <- city_counts_langstr %>% filter(NR == "Y2H19101255")
+city_counts_langstr <- city_counts_langstr %>% rename(trips_3 = trips,
+  trips = trips_add)
+
+city_counts <- city_counts %>% filter(!NR %in% c("Y2H16039396","Y2H21056105","Y2H21056106","Y2H21111102","Y2H19101255"))
+city_counts <- bind_rows(city_counts, city_counts_langstr, by=c("NR" = "NR"))
+
+
+
+#merge city and canton
+
+counts_all <- bind_rows(city_counts, canton_counts_month,by=c("NR" = "NR"))
+
+
+
+counts_all <- right_join(counts_all, stations_merge, by=c("NR" = "ID"))
+counts_all$Name.x <- ifelse(is.na(counts_all$Name.x),counts_all$Name.y, counts_all$Name.x)
+counts_all <- dplyr::select(counts_all, 1,22,2,4,21,26)
+
+counts_all <- left_join(counts_all, av_network_corrected_0418, by=c("OBJECTID"="OBJECTI", "Date" = "month"))
+
+```
+
+
+# viewer
+```{r}
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+tm_shape(stations_kt) +
+  tm_dots()+
+   tm_shape(stations_stadt) +tm_dots() 
+  # + tm_shape(bbox) +tm_polygons(alpha = 0.6)
+
+
+```
+
+

@@ -1,0 +1,147 @@
+
+
+```{r}
+library(tidyverse)
+library(sp)
+# install.packages("sf", repos = "https://r-spatial.r-universe.dev")
+library(sf)
+# library(tmap)
+# library(leaflet)
+library(igraph)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(sfnetworks)
+library(tidygraph)
+```
+
+```{r}
+
+
+AVnetz <- st_read("/home/ubuntu/input/AVnetz_res_gree_dist.shp")
+
+final01 <- st_read("/home/ubuntu/output/final01.shp")
+final02 <- st_read("/home/ubuntu/output/final02.shp")
+final03 <- st_read("/home/ubuntu/output/final03.shp")
+final04 <- st_read("/home/ubuntu/output/final04.shp")
+
+final <- rbind.data.frame(final01, final02, final03, final04)
+
+AVNetz_try <- select(AVnetz, 1,2,3,14,19,20)
+AVNetz_try <- AVNetz_try %>% rename(OBJECTID = OBJECTI)
+AVNetz_try <- right_join(AVNetz_try, as.data.frame(final), by = c("OBJECTID" = "OBJECTI"))
+
+AVNetztry_grouped <- AVNetz_try %>% group_by(OBJECTID, month) %>% summarise(
+  trips= sum(ttl_tr_),
+  commute_perc = mean(cmmt_pr))
+
+# load reference edges 
+
+avnetz_ref <- st_read("/home/ubuntu/input/output09_22_corrected.shp")
+
+# create data frame with added edges
+
+# Filter entries based on OBJECTID range
+start_obj_id <- 99999
+end_obj_id <- 100030
+
+added_edges <- avnetz_ref %>%
+  filter(OBJECTI >= start_obj_id & OBJECTI <= end_obj_id) 
+
+# Create a sequence of dates from January 2021 to December 2022
+months_seq <- seq(from = ymd("2021-01-01"), to = ymd("2022-12-31"), by = "month")
+
+# Create a data frame with all combinations of OBJECTID and months
+df <- expand.grid(OBJECTI = unique(added_edges$OBJECTI), month = months_seq)
+
+# Merge with filtered_av_netz_ref to get NA values for trips and commute_perc
+added_edges <- left_join(df, added_edges, by = c("OBJECTI"))
+
+# Set trips and commute_perc to NA
+added_edges$trips <- NA
+added_edges$commute_perc <- NA
+added_edges <- added_edges %>% rename(OBJECTID = OBJECTI)
+
+
+corr_try <- AVNetztry_grouped
+
+corr_try <- right_join(corr_try,as.data.frame(avnetz_ref), by= c("OBJECTID"= "OBJECTI"))
+
+corr_try <- bind_rows(corr_try,added_edges)
+
+corr_try[corr_try$OBJECTID == 99999, "trips"] <- 0
+corr_try[corr_try$OBJECTID == 99999, "commute_perc"] <- 0
+corr_try[corr_try$OBJECTID == 100000, "ref_obj_ID"] <- 20263
+
+corr_try[corr_try$OBJECTID == 99999, "ref_obj_ID"] <- 99999
+
+
+# Create new columns for corrected trips and commute percentage
+corr_try$corr_trips <- NA
+corr_try$corr_cmmt <- NA
+
+# Loop through each row in the data frame (VARIANTE 1, works)
+for (i in 1:nrow(corr_try)) {
+  # Get the OBJECTID, ref_obj_ID, and month for the current row
+  obj_id <- corr_try[["OBJECTID"]][i]
+  ref_obj_id <- corr_try[["ref_obj_ID"]][i]
+  month <- corr_try[["month"]][i]
+
+  # Check if OBJECTID matches ref_obj_ID
+  if (identical(obj_id, ref_obj_id) & identical(month, corr_try$month[i])) {
+    # Copy trips and cmmt_pr values to corrected columns
+    # corr_try[i, "corr_trips"] <- corr_try[i, "trips"]
+    # corr_try[i, "corr_cmmt"] <- corr_try[i, "commute_perc"]
+   corr_try[i, "corr_trips"] <- corr_try$trips[corr_try$OBJECTID == obj_id &
+                                                      corr_try$month == month][1]
+    corr_try[i, "corr_cmmt"] <- corr_try$commute_perc[corr_try$OBJECTID == obj_id &
+                                                            corr_try$month == month][1]
+  } else {
+    # Find the corrected edge with matching ref_obj_ID and month
+    ref_obj_id <- as.numeric(ref_obj_id)
+    # corr_edge <- filter(corr_try, OBJECTID == ref_obj_id, month == month)
+    # Create a logical column indicating whether OBJECTID matches ref_obj_id
+# corr_edge <- corr_try %>% mutate(match = OBJECTID == ref_obj_id)
+# 
+# # Filter the rows where match is TRUE
+# corr_edge <- filter(corr_edge, match == TRUE, month == month)
+#     
+#     # Copy trips and cmmt_pr values from corrected edge to corrected columns
+#     if (nrow(corr_edge) > 0) {
+#       corr_try[i, "corr_trips"] <- corr_edge$trips
+#       corr_try[i, "corr_cmmt"] <- corr_edge$commute_perc
+    
+        # Find the corrected edge with matching ref_obj_ID and month
+    corr_edge <- corr_try %>%
+      filter(OBJECTID == ref_obj_id, month == corr_try$month[i])
+
+    # Copy trips and cmmt_pr values from corrected edge to corrected columns
+    if (nrow(corr_edge) > 0) {
+      corr_try[i, "corr_trips"] <- corr_edge$trips[1]
+      corr_try[i, "corr_cmmt"] <- corr_edge$commute_perc[1]
+    }
+  }
+}
+
+```
+
+
+```{r}
+
+
+st_write(corr_try, "/home/ubuntu/output/av_network_corr.shp",append= FALSE)
+
+
+
+
+
+
+
+
+
+```
+
+
+
+
+

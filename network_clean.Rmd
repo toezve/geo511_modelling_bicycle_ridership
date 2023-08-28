@@ -1,0 +1,168 @@
+---
+title: "network_clean"
+output: html_document
+date: "2023-03-09"
+---
+
+#install and load packages
+
+```{r}
+library(tidyverse)
+library(sp)
+# install.packages("sf", repos = "https://r-spatial.r-universe.dev")
+library(sf)
+# library(tmap)
+# library(leaflet)
+library(igraph)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(sfnetworks)
+library(tidygraph)
+```
+
+
+# load raw data
+```{r}
+
+strava_geo <- st_read("/home/ubuntu/input/5b1a45d474a4b7dec98e59b73b6fbdae33278c8d45e0ecfbd0d6f22b0b788c00-1678723770243.shp")
+strava_csv <- read.csv("/home/ubuntu/input/5b1a45d474a4b7dec98e59b73b6fbdae33278c8d45e0ecfbd0d6f22b0b788c00-1678723770243.csv") 
+
+kt_av <- st_read("/home/ubuntu/input/AV_Achsen_KTZH_230127.shp")
+kt_av_midpoints <- st_read("/home/ubuntu/input/points.shp")
+kt_av_midpoints <- kt_av_midpoints %>% select(OBJECTID, geometry)
+
+
+```
+
+# Strava pre processing 
+```{r}
+
+# define polygon and st_intersection for perimeter
+###
+polygon_02 <- st_read("/home/ubuntu/input/polygons.shp") %>% filter(id == 2)
+
+# reproject strava to lv95
+strava_geo <- st_transform(strava_geo,crs = 2056)
+
+subset_02 <- st_intersection(strava_geo, polygon_02)
+
+
+
+# join with counts and define azimuth & commute percentage
+subset_02 <- inner_join(subset_02, strava_csv, by=c("edgeUID"="edge_uid"))
+subset_02 <- subset_02 %>% mutate(azimuth = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+
+subset_02 <- subset_02 %>% mutate(commute_trips = forward_commute_trip_count+reverse_commute_trip_count)
+subset_02 <- subset_02 %>% mutate(leisure_trips = forward_leisure_trip_count+reverse_leisure_trip_count)
+subset_02 <- subset_02 %>% mutate(month = lubridate::ym(month))%>% group_by(edgeUID,osmId, azimuth,month = floor_date(month, "month")) %>% 
+  summarize(total_trip_count = sum(total_trip_count),
+            leisure_trips = sum(leisure_trips),
+            commute_trips = sum(commute_trips))
+
+subset_02 <- subset_02 %>% mutate(commute_perc = (commute_trips/(commute_trips+leisure_trips)*100))
+
+```
+
+# AV NETZ pre processing
+```{r}
+
+# intersection with polygon
+
+av_02 <- st_intersection(kt_av, polygon_02)
+av_points_02 <- st_intersection(kt_av_midpoints, polygon_02)
+
+# azimuth
+av_02 <- av_02 %>% mutate(azimuth_av = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+
+av_02 <- av_02 %>% st_cast("LINESTRING")
+
+```
+
+# Strava processing
+```{r}
+
+# start processing
+
+subset_02_buffer <- subset_02 %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+subset_02_buffer_join <- st_join(av_02,subset_02_buffer, join= st_intersects)
+
+subset_02_buffer_join <- inner_join(subset_02,as.data.frame(subset_02_buffer_join),by= c("edgeUID", "osmId", "month"))
+subset_02_buffer_join <- subset_02_buffer_join %>% select(edgeUID,OBJECTID,total_trip_count.x,month, GEMEINDENA,TEXT,osmId,azimuth_av,azimuth.x, geometry.x)
+
+st_geometry(subset_02_buffer_join) <- "geometry.x"
+  
+
+
+subset_02_buffer_join <- subset_02_buffer_join %>% group_by(edgeUID,OBJECTID,month) %>% filter(abs(azimuth_av - azimuth.x) <= 20 |
+         abs(azimuth_av - azimuth.x + 180)<= 20 |
+         abs(azimuth_av - azimuth.x - 180)<= 20 |
+         abs(azimuth_av - azimuth.x - 360) <= 20 |
+         abs(azimuth_av - azimuth.x + 360) <= 20)
+        
+
+subset_02_buffer_join <- subset_02_buffer_join %>% group_by(edgeUID) %>% summarise()
+
+
+subset_02_buffer_join <- st_cast(subset_02_buffer_join, "LINESTRING")
+
+strava_network02 <- as_sfnetwork(subset_02_buffer_join, directed = FALSE)
+# define middle value function
+middle_value <- list(edgeUID = function(x) {
+  n <- length(x)
+  if (n %% 2 == 0) {
+    middle <- n %/% 2
+    if (runif(1) > 0.5) {
+      return(x[middle])
+    } else {
+      return(x[middle + 1])
+    }
+  } else {
+    return(x[(n+1) %/% 2])
+  }
+})
+
+# smooth pseudo nodes
+strava_network_smooth02 = convert(strava_network02, to_spatial_smooth, store_original_data = FALSE, require_equal= FALSE, summarise_attributes= middle_value)
+
+edges_all <- strava_network02 %>% activate("edges") %>% st_as_sf()
+edges <- strava_network_smooth02 %>% activate("edges") %>% st_as_sf()
+
+# V3: strava preprocessing vor st_join
+
+subset02_rejoin <- inner_join(edges, as.data.frame(subset_02), by= "edgeUID")
+
+
+
+#-------------
+subset02_p <- subset02_rejoin %>% st_buffer(dist = 12, endCapStyle = "FLAT")
+
+subset02_centr <- st_join(av_points_02,subset02_p,join = st_intersects)
+
+
+final02 <- inner_join(av_02, as.data.frame(subset02_centr), by = "OBJECTID")
+final02 <- final02 %>% select(OBJECTID,total_trip_count,commute_perc,month,edgeUID, GEMEINDENA,TEXT,osmId,azimuth_av,azimuth)
+final02 <- final02 %>% filter(!is.na(total_trip_count))
+
+st_write(final02,"/home/ubuntu/output/final02.shp",append = FALSE)
+
+# group and summarise for each edge (take mean of months)
+final02_mean <- final02 %>% group_by(OBJECTID, edgeUID) %>% summarise(
+  trips = mean(total_trip_count),
+  commute_perc = mean(commute_perc))
+
+# now sum all edges for each AV segment
+final02_mean <- final02_mean %>% group_by(OBJECTID) %>% summarise(
+  trips= sum(trips),
+  commute_perc = mean(commute_perc))
+
+st_write(final02_mean,"/home/ubuntu/output/final02_mean.shp", append = FALSE)
+
+
+```
+
+
+
+
+
+

@@ -1,0 +1,43 @@
+---
+title: "Strava Data and Joins"
+output: html_document
+date: "2023-01-18"
+---
+This script reads the Strava data and thus links geodata with strava counts. 
+
+```{r}
+library(tidyverse)
+library(sp)
+library(sf)
+library(tmap)
+library(leaflet)
+library(igraph)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+
+# objectsizes()
+
+```
+
+```{r}
+strava_geo <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Strava\\strava_edges_2021_2022\\bc0cadf1b4c85e106d3cfdeaa4e54886be2bb13fd3a1f1d376cc6b5761b68efd-1673958497415.shp")
+strava_csv <- read.csv("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Strava\\strava_edges_2021_2022\\bc0cadf1b4c85e106d3cfdeaa4e54886be2bb13fd3a1f1d376cc6b5761b68efd-1673958497415.csv")
+```
+# join und crs transform
+
+```{r}
+
+
+strava <- right_join(strava_geo %>% st_crop(y = polygon), strava_csv, by=c("edgeUID"="edge_uid"))
+strava_geo <- strava_geo %>% st_transform(crs = 2056)
+strava_geo <- strava_geo %>% mutate(azimuth = st_azimuth(st_startpoint(geometry), st_endpoint(geometry)))
+strava <- st_transform(strava, crs = 2056)
+
+bbox <- st_bbox(strava_geo) %>% st_as_sfc()
+
+st_write(bbox, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\Strava\\bbox.shp")
+
+
+
+```

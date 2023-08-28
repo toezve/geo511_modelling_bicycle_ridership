@@ -1,0 +1,547 @@
+---
+title: "GLM2_clean"
+output: html_document
+date: "2023-06-06"
+---
+
+```{r}
+
+library(tidyverse)
+library(sp)
+# install.packages("sf", repos = "https://r-spatial.r-universe.dev")
+library(sf)
+library(tmap)
+library(leaflet)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(ggplot2)
+library(corrr)
+library(dplyr)
+library(MASS)
+library(car)
+library(jtools)
+library(fastDummies)
+library(statmod)
+library(units)
+library(lme4)
+library(glmmTMB)
+library(performance)
+library(gridExtra)
+library(BAMMtools)
+
+```
+
+
+```{r}
+# log transformation
+# stations_ols_clean$trips_strava <- log(stations_ols_clean$trips_strava)
+
+set.seed(9) # set random seed for reproducibility
+
+# stations sampling
+train_stations_v2 <- unique(stations_ols_clean_V2$OBJECTID)
+train_stations_v2 <- sample(train_stations_v2, round(0.80*length(train_stations_v2)))
+train_data_v2 <- stations_ols_clean_V2 %>% dplyr::filter(OBJECTID %in% train_stations_v2)
+test_data_v2 <- stations_ols_clean_V2 %>% dplyr::filter(!OBJECTID %in% train_stations_v2)
+
+# all data
+# train_data_v2 <- stations_ols_clean
+
+# # # # random sampling
+# set.seed(123)
+# train_indices <- sample(nrow(stations_ols_clean), 0.8 * nrow(stations_ols_clean))
+# 
+#  train_data_v2 <- stations_ols_clean[train_indices, ]
+#  test_data_v2 <- stations_ols_clean[-train_indices, ]
+
+
+
+   # Fit the model new lasso, w/o 2022, spring and summer
+  model_v2 <- glmmTMB(trips_station ~ trips_strava + crr_cmm + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_winter + (1|OBJECTID), data = train_data_v2, family = "nbinom2") 
+
+
+
+
+
+# regression_strava_filt <- regression_strava_filt %>% dplyr::rename(trips_strava = crr_trp)
+
+prediction_data_v2 <- regression_strava_filt
+prediction_data_v2 <- prediction_data_v2 %>% rename(OBJECTID = OBJECTI)
+prediction_data_v2$trips_strava <- log(prediction_data_v2$trips_strava)
+
+
+# enter one-hot encoding for months and years. months are aggregated to seasons.
+prediction_data_v2<- prediction_data_v2 %>% mutate(season = case_when(
+  month == 1 | month == 2 | month == 12 ~ "winter",
+  month == 3 | month == 4 | month == 5 ~ "spring",
+  month == 6 | month == 7 | month == 8 ~ "summer",
+  month == 9 | month == 10 | month == 11 ~ "autumn"
+))
+
+prediction_data_v2 <- dummy_cols(prediction_data_v2, select_columns = c("season", "year"), remove_first_dummy = TRUE)
+
+
+
+# make a prediction 
+prediction_v2 <- predict(model_v2, newdata = prediction_data_v2, type = "response", allow.new.levels = TRUE)
+
+# add the predicted count to the prediction_data dataframe
+prediction_data_v2$count <- prediction_v2
+
+
+regression_strava_filt_v2 <- prediction_data_v2
+
+# regression_strava_filt_v2 <- right_join(regression_strava_filt_v2, prediction_data_v2 %>% dplyr::select(OBJECTI,month,year,count), by= c("OBJECTI", "month", "year"))
+regression_strava_filt_v2 <- regression_strava_filt_v2 %>% dplyr::select(1,2,"year","count", everything())
+
+summary(model_v2)
+# car::vif(model_v2)
+performance::r2(model_v2)
+multicollinearity(model_v2)
+plot(model_v2)
+
+str(model_v2)
+
+str(summary_model)
+
+p_values <- summary_model$coefficients$cond[, "Pr(>|z|)"]
+p_values
+
+```
+
+
+# in sample predictions
+```{r}
+
+
+r# assign back to in sample predictions
+test_data_nb <- train_data_v2
+predictions_nb <- predict(model_v2, newdata =test_data_nb, type = "response")
+test_data_nb$predictions <- predictions_nb
+test_data_nb <- test_data_nb %>% dplyr::select(1,2,3,4,predictions, everything())
+test_data_nb$relative_diff <- ((test_data_nb$predictions - test_data_nb$trips_station) / test_data_nb$trips_station) * 100
+test_data_nb$relative_diff_abs <- abs(test_data_nb$relative_diff)
+# test_data_nb$predictions <- exp(test_data_nb$predictions)
+# test_data_nb$trips_station <- exp(test_data_nb$trips_station)
+ # test_data_nb$trips_strava <- exp(test_data_nb$trips_strava)
+
+
+ggplot(test_data_nb, aes(x = trips_station, y = predictions)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  labs(title = "Predicted Counts vs. Actual Counts", x = "Actual Counts", y = "Predicted Counts")
+# ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Predicted_vs_Actuals_insample_nolog.tiff", width = 8, height = 6, dpi = 300, device = "tiff")
+
+
+# Create a scatter plot of predicted count differences
+ggplot(test_data_nb, aes(x = trips_station, y = ((predictions - trips_station)/trips_station)*100,colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+ scale_color_manual(values = rainbow(length(unique(test_data_nb$Name)))) + ggtitle("Relative difference of predictions vs actual")
+
+ggplot(test_data_nb, aes(x = trips_station, y = (predictions - trips_station),colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+ scale_color_manual(values = rainbow(length(unique(test_data_nb$Name)))) + ggtitle("Absolute difference of predictions vs actual")
+
+
+
+
+library(ggplot2)
+
+test_data_nb <- test_data_nb %>% dplyr::arrange(Location)
+
+ggplot(test_data_nb, aes(x = Name, y = relative_diff, fill = Location)) +
+  geom_boxplot(color = "black", alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", fill = "Location") +
+  scale_fill_manual(values = c("City" = "Red", "Canton" = "Blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6)) +
+  coord_cartesian(ylim = c(-50, 400)) +
+  guides(fill = guide_legend(title = "Location", title.position = "top", ncol = 1)) +
+  ggtitle("Prediction Accuracy after Station")
+# ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Stations_relative_accuracy_boxplot_nolog.tiff")
+
+
+# Calculate accuracy metrics
+mae <- mean(abs(test_data_nb$trips_station - test_data_nb$predictions))
+mse <- mean((test_data_nb$trips_station - test_data_nb$predictions)^2)
+rmse <- sqrt(mse)
+mpe <- mean((test_data_nb$predictions - test_data_nb$trips_station) / test_data_nb$trips_station) * 100
+mape <- mean(abs((test_data_nb$predictions - test_data_nb$trips_station) / test_data_nb$trips_station)) * 100
+
+# Print the accuracy metrics
+summary(model_v2)
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+cat("Mean Percentage Error (MPE):", mpe, "%\n")
+cat("Mean Absolute Percentage Error (MAPE):", mape, "%\n")
+
+
+
+
+```
+
+
+
+
+# test accuracy with test data
+
+```{r}
+
+
+# assign back to test data
+# prediction_data_v2 <- dplyr::rename(prediction_data_v2, OBJECTID = OBJECTI)
+test_data_v2 <- inner_join(test_data_v2, prediction_data_v2 %>% dplyr::select(OBJECTID,month, year, count), by = c("OBJECTID", "month", "year"))
+# test_data_v2 <- test_data_v2 %>% dplyr::select(1,2,3,4,32,8,9, dplyr::everything())
+test_data_v2 <- test_data_v2 %>% dplyr::select(1,2,3,4,25,8,9, dplyr::everything())
+
+test_data_v2$relative_diff <- ((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station) * 100
+test_data_v2$relative_diff_abs <- abs(test_data_v2$relative_diff)
+# test_data_nb$predictions <- exp(test_data_nb$predictions)
+# test_data_nb$trips_station <- exp(test_data_nb$trips_station)
+ # test_data_nb$trips_strava <- exp(test_data_nb$trips_strava)
+
+
+ggplot(test_data_v2, aes(x = trips_station, y = count)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  labs(title = "Predicted Counts vs. Actual Counts", x = "Actual Counts", y = "Predicted Counts")
+# ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Predicted_vs_Actuals_insample_nolog.tiff", width = 8, height = 6, dpi = 300, device = "tiff")
+
+
+# Create a scatter plot of predicted count differences
+ggplot(test_data_v2, aes(x = trips_station, y = relative_diff ,colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+ scale_color_manual(values = rainbow(length(unique(test_data_v2$Name)))) + ggtitle("Relative difference of predictions vs actual")
+
+ggplot(test_data_v2, aes(x = trips_station, y = (count - trips_station),colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+ scale_color_manual(values = rainbow(length(unique(test_data_v2$Name)))) + ggtitle("Absolute difference of predictions vs actual")
+
+
+
+
+library(ggplot2)
+
+test_data_nb <- test_data_v2 %>% dplyr::arrange(Location)
+
+ggplot(test_data_v2, aes(x = Name, y = relative_diff, fill = Location)) +
+  geom_boxplot(color = "black", alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", fill = "Location") +
+  scale_fill_manual(values = c("City" = "Red", "Canton" = "Blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6)) +
+  coord_cartesian(ylim = c(-100, 400)) +
+  guides(fill = guide_legend(title = "Location", title.position = "top", ncol = 1)) +
+  ggtitle("Prediction Accuracy after Station")
+# ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Stations_relative_accuracy_boxplot_nolog.tiff")
+
+
+
+
+# hist(test_data_v2$month)
+
+
+```
+
+
+```{r}
+# Calculate accuracy metrics
+mae <- mean(abs(test_data_v2$trips_station - test_data_v2$count))
+mse <- mean((test_data_v2$trips_station - test_data_v2$count)^2)
+rmse <- sqrt(mse)
+mpe <- mean((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station) * 100
+mape <- mean(abs((test_data_v2$count - test_data_v2$trips_station) / test_data_v2$trips_station)) * 100
+
+# Print the accuracy metrics
+summary(model_v2)
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+cat("Mean Percentage Error (MPE):", mpe, "%\n")
+cat("Mean Absolute Percentage Error (MAPE):", mape, "%\n")
+
+1 - (model_v2 / model_v2$null.deviance )
+```
+# out of sample percentage accuracy (Model 7, average performing)
+```{r}
+
+
+outsample_perc_acc <- test_data_v2
+outsample_perc_acc <- dplyr::select(outsample_perc_acc, 1,2,3,4,5,7,9,10,26,27)
+
+breaks <- seq(0, 1500, by = 2.5)  # Create breaks from 0% to 100% with 5% intervals
+
+
+outsample_perc_acc$abs_rel_diff_class <- cut(outsample_perc_acc$relative_diff_abs, breaks = breaks, include.lowest = TRUE, labels = paste(breaks[-length(breaks)], "-", breaks[-1], "%", sep = ""))
+
+
+# Step 1: Create a complete table with all levels and counts, including missing levels with count zero
+complete_table_out <- outsample_perc_acc %>%
+  count(abs_rel_diff_class, name = "count") %>%
+  complete(abs_rel_diff_class, fill = list(count = 0))
+
+# Step 2: Calculate the percentage of segments in each class
+total_segments <- nrow(outsample_perc_acc)  # Total number of segments in the dataframe
+complete_table_out <- complete_table_out %>%
+  mutate(percentage = (count / total_segments) * 100)
+
+complete_table_out <- complete_table_out %>% filter(count !=0)
+
+# Calculate the cumulative percentage
+complete_table_out <- complete_table_out %>%
+  mutate(cumulative_percentage = cumsum(percentage))
+
+
+vector_out <-c(1.25, 3.75, 6.25, 8.75, 11.25, 13.75, 16.25, 18.75, 21.25, 23.75, 26.25, 28.75, 31.25, 33.75, 38.75, 41.25, 43.75, 46.25, 48.75, 51.25, 53.75, 61.25, 63.75, 68.75, 71.25, 76.25, 81.25, 91.25, 96.25, 106.75, 108.75, 111.25, 116.25, 121.25, 123.75, 126.25, 128.75, 131.25, 133.75, 138.75, 141.25, 143.75, 146.25, 153.75, 158.75, 163.75, 166.25, 168.75, 178.75, 181.25, 188.75, 211.25, 213.75, 218.75, 296.25, 358.75)
+
+complete_table_out$middle <- vector_out
+#middle value generieren!!!!!
+
+# 128 obs in 46 classes
+
+
+# Plot the line plot
+oos_avg <- ggplot(data = complete_table_out,
+       aes(x = middle, y = cumulative_percentage)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Relative Absolute Difference Predicted vs Actual (%)", y = "Cumulative % of Predicted Segments") +
+  scale_x_continuous(breaks = seq(0, 460, 50), limits = c(0, 460)) +
+  scale_y_continuous(breaks = seq(0, 100, 10), limits = c(0, 100)) +
+  theme_minimal() +
+    theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 13, face = "bold")) +
+  ggtitle("Average Model (7)")
+  ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\outsample_avg2_accuracy_segments.tiff")
+
+complete_table_out$abs_rel_diff_class
+
+```
+
+
+#try AADB
+
+```{r}
+
+oos_aadb <- outsample_perc_acc
+oos_aadb <- oos_aadb %>% mutate(avg_day_stat = trips_station/30,
+                                avg_day_pred = count/30)
+
+oos_aadb <- oos_aadb %>% group_by(Name) %>% summarise(AADB_stat = mean(avg_day_stat),AADB_pred = mean(avg_day_pred))
+
+```
+
+
+
+
+# out of sample percentage accuracy (Model 9, best performing) (same variables used as above!)
+```{r}
+
+
+outsample_perc_acc <- test_data_v2
+outsample_perc_acc <- dplyr::select(outsample_perc_acc, 1,2,3,4,5,9,10,26,27)
+
+breaks <- seq(0, 1500, by = 2.5)  # Create breaks from 0% to 100% with 5% intervals
+
+
+outsample_perc_acc$abs_rel_diff_class <- cut(outsample_perc_acc$relative_diff_abs, breaks = breaks, include.lowest = TRUE, labels = paste(breaks[-length(breaks)], "-", breaks[-1], "%", sep = ""))
+
+
+# Step 1: Create a complete table with all levels and counts, including missing levels with count zero
+complete_table_out <- outsample_perc_acc %>%
+  count(abs_rel_diff_class, name = "count") %>%
+  complete(abs_rel_diff_class, fill = list(count = 0))
+
+# Step 2: Calculate the percentage of segments in each class
+total_segments <- nrow(outsample_perc_acc)  # Total number of segments in the dataframe
+complete_table_out <- complete_table_out %>%
+  mutate(percentage = (count / total_segments) * 100)
+
+complete_table_out <- complete_table_out %>% filter(count !=0)
+
+# Calculate the cumulative percentage
+complete_table_out <- complete_table_out %>%
+  mutate(cumulative_percentage = cumsum(percentage))
+
+vector_out <- c(1.25,3.75,6.25,8.75,11.25,13.75,16.25,18.75,21.25,23.75,26.25,28.75,31.25,33.75,36.25,38.75,41.25,43.75,46.25,48.75,51.25,61.25,73.75,83.75,98.75,101.25,113.75,118.75,123.25,153.75,203.75,276.25,336.25)
+
+complete_table_out$middle <- vector_out
+#middle value generieren!!!!!
+
+# 145 obs in 34 classes of 2.5 steps
+
+
+
+
+# Plot the line plot
+oos_best<- ggplot(data = complete_table_out,
+       aes(x = middle, y = cumulative_percentage)) +
+  geom_line() +
+  geom_point() +
+  labs(x = "Relative Absolute Difference Predicted vs Actual (%)", y = "Cumulative % of Predicted Segments") +
+   scale_x_continuous(breaks = seq(0, 460, 50), limits = c(0, 460)) +
+  scale_y_continuous(breaks = seq(0, 100, 10), limits = c(0, 100)) +
+  theme_minimal() +
+    theme(axis.text.x = element_text(size = 10),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 13, face = "bold")) +
+  ggtitle("Best Model (9)")
+  ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\outsample_best2_accuracy_segments.tiff")
+
+  
+
+
+```
+
+#merge
+```{r}
+
+library(grid)
+grid_oos <- grid.arrange(oos_avg,oos_best,ncol = 2,top = textGrob("Out-of-sample Prediction: Average vs. Best Model", gp = gpar(fontsize = 16, fontface = "bold")))
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\GLM2_grid_oos2.tiff", plot = grid_oos, width = 12, height = 6)
+
+
+
+```
+
+# confusion matrix & jaccard index for both (same variables)
+
+```{r}
+
+# I create 7 classes only to use the last three classes as one because of the distribtion of values of the medians of station trips. 
+
+
+jenks_all_med <- getJenksBreaks(median_stat$median,8)
+
+outsample_perc_acc$Class<- cut(outsample_perc_acc$trips_station, jenks_all_med, labels = c("1","2","3","4","5","6","7"),include.lowest = FALSE)
+
+outsample_perc_acc$Class_pred<- cut(outsample_perc_acc$count, jenks_all_med, labels = c("1","2","3","4","5","6","7"),include.lowest = FALSE)
+
+outsample_perc_acc <- outsample_perc_acc %>% mutate(Class = ifelse(count < 2725, 1,outsample_perc_acc$Class))
+
+outsample_perc_acc <- outsample_perc_acc %>% mutate(Class = ifelse(trips_station < 2725, 1,outsample_perc_acc$Class))
+
+outsample_perc_acc <- outsample_perc_acc %>% mutate(Class_pred = ifelse(count < 2725, 1,outsample_perc_acc$Class_pred) ) 
+
+outsample_perc_acc <- outsample_perc_acc %>% mutate(Class_pred = ifelse(trips_station < 2725, 1,outsample_perc_acc$Class_pred) ) 
+
+outsample_perc_acc <- outsample_perc_acc %>% mutate(Class = case_when(
+  Class == 5 ~ 5,
+  Class == 6 ~ 5,
+  Class == 7 ~ 5, 
+  .default = Class))
+
+outsample_perc_acc <- outsample_perc_acc %>% mutate(Class_pred = case_when(
+  Class_pred == 5 ~ 5,
+  Class_pred == 6 ~ 5,
+  Class_pred == 7 ~ 5, 
+  .default = Class_pred))
+
+hist(stations_ols_clean$trips_station)
+hist(median_stat$median,breaks= 15)
+classvec <- outsample_perc_acc$Class
+ggplot(data.frame(classvec), aes(x=classvec)) +
+  geom_bar()
+
+
+
+# Filter the dataframe to include only classes 1 to 4
+filtered_df <- subset(outsample_perc_acc, Class %in% c(1, 2, 3, 4,5))
+
+# Calculate the intersection and union for each class, 1:4 for average, 1:5 for best model
+jaccard_results <- sapply(1:5, function(cls) {
+  true_pos <- sum(filtered_df$Class == cls & filtered_df$Class_pred == cls)
+  false_pos <- sum(filtered_df$Class_pred == cls & filtered_df$Class != cls)
+  false_neg <- sum(filtered_df$Class_pred != cls & filtered_df$Class == cls)
+  intersection <- true_pos
+  union <- true_pos + false_pos + false_neg
+  jaccard <- intersection / union
+  return(list(Intersection = intersection, Union = union, Jaccard_Index = jaccard))
+})
+
+# The Jaccard index, Intersection, and Union for each class will be stored in the 'jaccard_results' list
+
+
+```
+
+
+
+
+
+
+# out of sample jitters 
+
+```{r}
+
+oos_jitter_avg <- ggplot(test_data_v2, aes(x = Name, y = relative_diff)) +
+  geom_jitter(aes(colour = Location), alpha = 0.6, width = 0.3, height = 0.1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", colour = "Location") +
+  scale_colour_manual(values = c("City" = "#990000", "Canton" = "#3333FF")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 12, face = "bold"),panel.grid.minor = element_blank()) +
+  scale_y_continuous(breaks = seq(-50, 325, 25), limits = c(-65, 350))  +
+  ggtitle("Average Model (7)")
+
+oos_jitter_best <- ggplot(test_data_v2, aes(x = Name, y = relative_diff)) +
+  geom_jitter(aes(colour = Location), alpha = 0.6, width = 0.3, height = 0.1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", colour = "Location") +
+  scale_colour_manual(values = c("City" = "#990000", "Canton" = "#3333FF")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 8),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 12, face = "bold"),panel.grid.minor = element_blank()) +
+  scale_y_continuous(breaks = seq(-50, 325, 25), limits = c(-65, 350))  +
+  ggtitle("Best Model (9)")
+
+oos_sdbest <- test_data_v2 %>% group_by(Name) %>% summarise(sd= sd(relative_diff_abs))
+
+
+library(grid)
+grid_oos_jitter <- grid.arrange(oos_jitter_avg,oos_jitter_best,ncol = 2,top = textGrob("Out-of-sample Prediction at Stations: Average vs. Best Model", gp = gpar(fontsize = 16, fontface = "bold")))
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\GLM2_grid_oos_jitter.tiff", plot = grid_oos_jitter, width = 12, height = 6)
+
+```
+
+# seasons
+
+```{r}
+
+ggplot(test_data_v2, aes(x = Name, y = relative_diff)) +
+  geom_jitter(aes(colour = season), alpha = 0.6, width = 0.3, height = 0.1) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", colour = "Location") +
+  # scale_colour_manual(values = c("City" = "#990000", "Canton" = "#3333FF")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6),
+        axis.text.y = element_text(size = 10),
+        axis.title = element_text(size = 10, face = "bold"),
+        plot.title = element_text(size = 12, face = "bold"),panel.grid.minor = element_blank()) +
+  scale_y_continuous(breaks = seq(-50, 325, 25), limits = c(-65, 350))  +
+  ggtitle("Best Model (16)")
+
+
+
+
+
+
+```
+

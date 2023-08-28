@@ -1,0 +1,938 @@
+---
+title: "stations_OLS"
+output: html_document
+date: "2023-04-20"
+---
+
+```{r}
+library(tidyverse)
+library(sp)
+# install.packages("sf", repos = "https://r-spatial.r-universe.dev")
+library(sf)
+library(tmap)
+library(leaflet)
+library(igraph)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(tidygraph)
+library(progress)
+library(ggplot2)
+library(corrr)
+library(dplyr)
+library(MASS)
+library(car)
+library(jtools)
+library(fastDummies)
+library(statmod)
+library(units)
+library(ggrepel)
+library(gridExtra)
+
+```
+
+In the script "counting stations", a dataframe called "counts_all" is prepared which links each station and its counts to the respective Strava Counts of the edge at the point of the station. 
+
+#prepare counts 1
+```{r}
+
+stations_ols <- counts_all
+stations_ols <- stations_ols %>% rename(
+  trips_station = trips.x,
+  trips_strava = crr_trp,
+  Name = Name.x,
+  ref_obj_ID = rf_b_ID
+)
+stations_ols[stations_ols$NR == "Y2H19070585", "Name"] <- "Limmatquai (Summe)"
+stations_ols[stations_ols$NR == "Y2H16069942", "Name"] <- "Hardbruecke (Summe)"
+stations_ols[stations_ols$NR == "Y2H19101255", "Name"] <- "Langstrasse (Summe)"
+stations_ols[stations_ols$NR == "1018", "Name"] <- "Dietikon Ueberlandstr Ost"
+stations_ols[stations_ols$NR == "2020", "Name"] <- "Dietikon Bruecke"
+stations_ols[stations_ols$NR == "818", "Name"] <- "Schlieren Vulkanstr"
+stations_ols[stations_ols$NR == "918", "Name"] <- "Schlieren Gaswerk"
+stations_ols[stations_ols$NR == "2119", "Name"] <- "Schlieren Zuercherstr"
+stations_ols[stations_ols$NR == "1819", "Name"] <- "Kloten Schaffhauserstr"
+stations_ols[stations_ols$NR == "2219", "Name"] <- "Bassersdorf Feuerwehr"
+stations_ols[stations_ols$NR == "716", "Name"] <- "Regensdorf West"
+stations_ols[stations_ols$NR == "616", "Name"] <- "Regensdorf Ost"
+
+stations_ols <- dplyr::select(stations_ols, 1,2,3,5,4,12,13,9,6)
+stations_ols$Date <- as.character(stations_ols$Date)
+
+# filter stations where the situation is not yet clear or uncomplete months
+# Tödistrasse zu wenige messmonate
+
+stations_ols <- stations_ols %>% filter(!NR %in% c("Y2G13124877"))
+stations_ols <- stations_ols %>% filter(trips_station != 0)
+
+```
+
+#filter stations uncomplete months & sum up certain stations together: city
+```{r}
+stations_ols <- stations_ols %>% filter(!(Name == "Binzmühlestrasse" & Date %in% c("2021-06-01", "2021-12-01", "2022-03-01", "2022-04-01")))
+
+stations_ols <- stations_ols %>% filter(!(Name == "Bertastrasse" & Date %in% c("2021-09-01")))
+
+stations_ols <- stations_ols %>% filter(!(Name == "Bucheggplatz" & Date %in% c("2021-01-01", "2021-02-01")))
+
+stations_ols <- stations_ols %>% filter(!(Name == "Hofwiesenstrasse" & Date %in% c("2022-03-01", "2022-04-01", "2022-05-01")))
+
+
+stations_ols <- stations_ols %>% filter(!(Name == "Mythenquai" & Date %in% c("2022-02-01")))
+
+stations_ols <- stations_ols %>% filter(!(Name == "Mythenquai" & Date %in% c("2022-09-01", "2022-10-01", "2022-11-01")))
+
+stations_ols <- stations_ols %>% filter(!(Name == "Saumackerstrasse" & Date %in% c("2021-01-01", "2021-03-01","2021-06-01", "2022-05-01")))
+
+stations_ols <- stations_ols %>% filter(!(Name == "Scheuchzerstrasse" & Date %in% c("2021-06-01", "2021-07-01")))
+
+stations_ols <- stations_ols %>% filter(!(Name == "Sihlpromenade" & Date %in% c("2021-06-01", "2021-09-01","2021-10-01","2021-12-01","2022-03-01","2022-04-01","2022-08-01","2022-10-01")))
+
+stations_ols <- stations_ols %>% filter(!(Name == "Talstrasse" & Date %in% c("2021-01-01", "2021-02-01","2021-03-01","2021-04-01","2021-05-01","2021-06-01","2021-11-01")))
+
+
+```
+
+# filter station's uncomplete months:  canton
+```{r}
+# 2221 fischerweg dübendorf
+stations_ols <- stations_ols %>% filter(!(NR == 2221 & Date %in% c("2022-04-01")))
+# 2721 Glattuferweg Süd, Opfikon
+stations_ols <- stations_ols %>% filter(!(NR == 2721 & Date %in% c("2021-09-01","2022-05-01", "2022-08-01","2022-09-01","2022-10-01","2022-11-01","2022-12-01")))
+# 2521 Glattuferweg Zunstrasse Opfikon
+stations_ols <- stations_ols %>% filter(!(NR == 2521 & Date %in% c("2021-09-01")))
+# 2421 Glattuferweg Zürich
+stations_ols <- stations_ols %>% filter(!(NR == 2421 & Date %in% c("2021-09-01")))
+#221 Ueberlandstr Dieitkon
+stations_ols <- stations_ols %>% filter(!(NR == 221 & Date %in% c("2021-09-01")))
+# 2119 Zürcherstrasse Schlieren
+stations_ols <- stations_ols %>% filter(!(NR == 2119 & Date %in% c("2021-07-01")))
+
+# 1021&1121 Zürcherstrasse Schlieren
+stations_ols <- stations_ols %>% filter(!(NR == 1021 & Date %in% c("2021-12-01")))
+
+# 421&521 Zürcherstrasse Schlieren
+stations_ols <- stations_ols %>% filter(!(NR == 421 & Date %in% c("2021-12-01")))
+
+# 1519&5019 Zürcherstrasse Schlieren
+stations_ols <- stations_ols %>% filter(!(NR == 1519 & Date %in% c("2022-05-01")))
+
+```
+
+
+
+#add edge for station 2621
+```{r}
+
+
+
+stations_j <- inner_join(stations_ols, opfikon_93207, by= "OBJECTID") %>% filter(Date == month)
+stations_j$trips_strava <- ifelse(is.na(stations_j$trips_strava),stations_j$ttl_tr_,stations_ols$trips_strava)
+stations_j$crr_cmm <- ifelse(is.na(stations_j$crr_cmm),stations_j$cmmt_pr,stations_ols$crr_cmm)
+stations_ols <- stations_ols %>% filter(!is.na(trips_strava))
+stations_ols <- bind_rows(stations_ols, stations_j)
+# Opfikon, Glattuferweg Nord
+stations_ols <- stations_ols %>% filter(!(NR == 2621 & Date %in% c("2021-10-01")))
+
+# stations_ols[stations_ols$NR == "2721", "Name"] <- ""
+stations_ols$Location <- ifelse(grepl("^[0-9]", stations_ols$NR), "Canton", "City")
+
+```
+
+# clean and add geo variables for the GLMMs
+```{r}
+
+stations_ols_clean <- stations_ols %>% dplyr::select(1:7)
+
+stations_ols_clean$Location <- ifelse(grepl("^[0-9]", stations_ols_clean$NR), "Canton", "City")
+
+
+stations_ols_clean <- stations_ols_clean %>% 
+  mutate(Date = ymd(Date))
+
+# stations_ols_clean <- stations_ols_clean %>% mutate(year = as.factor(year(ymd(Date))),
+#          # month = as.factor(month(ymd(Date))))
+
+stations_ols_clean <- stations_ols_clean %>% mutate(year = year(ymd(Date)),
+         month = month(ymd(Date)))
+       
+# enter one-hot encoding for months and years. months are aggregated to seasons.
+stations_ols_clean <- stations_ols_clean %>% mutate(season = case_when(
+  month == 1 | month == 2 | month == 12 ~ "winter",
+  month == 3 | month == 4 | month == 5 ~ "spring",
+  month == 6 | month == 7 | month == 8 ~ "summer",
+  month == 9 | month == 10 | month == 11 ~ "autumn"
+))
+
+stations_ols_clean <- dummy_cols(stations_ols_clean, select_columns = c("season", "year"), remove_first_dummy = TRUE)
+
+
+
+stations_ols_clean <- left_join(stations_ols_clean, as.data.frame(avnetz_accid %>% dplyr::select(OBJECTID,dist_10_green,dist_2_resid,accidents)%>% st_drop_geometry()), by = c("OBJECTID"="OBJECTID"))
+stations_ols_clean <- left_join(stations_ols_clean, as.data.frame(av_midpoints_mix_landuse %>% dplyr::select(OBJECTID,mix_value)%>% st_drop_geometry()), by = c("OBJECTID"="OBJECTID"))
+stations_ols_clean <- left_join(stations_ols_clean, as.data.frame(av_midpoints_r %>% dplyr::select(OBJECTID,PopDens, u80_perc, dist_sve, swiss_sep_D)%>% st_drop_geometry()), by = c("OBJECTID"="OBJECTID"))
+stations_ols_clean <- left_join(stations_ols_clean, as.data.frame(av_midpoints_speed %>% dplyr::select(OBJECTID,vmax)%>% st_drop_geometry()), by = c("OBJECTID"="OBJECTID"))
+stations_ols_clean <- left_join(stations_ols_clean, as.data.frame(slope_zero %>% dplyr::select(OBJECTI,slope) %>% st_drop_geometry()), by = c("OBJECTID" = "OBJECTI"))
+
+stations_ols_clean <- dplyr::select(stations_ols_clean, -Date)
+
+stations_ols_clean <- stations_ols_clean %>% filter(!NR %in% c("Y2H16039396","Y2H21056105","Y2H21056106","Y2H21111102"))
+
+# manually stations 2621
+
+stations_ols_clean$dist_10_green[stations_ols_clean$NR == "2621"] <- rep(0.00000)
+stations_ols_clean$dist_2_resid[stations_ols_clean$NR == "2621"] <- rep(0.00000)
+stations_ols_clean$slope[stations_ols_clean$NR == "2621"] <- rep(1)
+stations_ols_clean$mix_value[stations_ols_clean$NR == "2621"] <- rep(1)
+stations_ols_clean$PopDens[stations_ols_clean$NR == "2621"] <- rep(1891)
+stations_ols_clean$u80_perc[stations_ols_clean$NR == "2621"] <- rep(8.59595)
+stations_ols_clean$accidents[stations_ols_clean$NR == "2621"] <- rep(0)
+stations_ols_clean$vmax[stations_ols_clean$NR == "2621"] <- rep(0)
+
+#manually station bucheggplatz
+
+values <- regression_strava[regression_strava$OBJECTI == 62056, c("dist_10_green", "dist_2_resid", "accidents", "mix_value", "PopDens", "u80_perc", "vmax", "slope", "dist_sve", "swiss_sep_D")]
+
+stations_ols_clean[stations_ols_clean$OBJECTID == 100010, c("dist_10_green", "dist_2_resid", "accidents", "mix_value", "PopDens", "u80_perc", "vmax", "slope", "dist_sve","swiss_sep_D")] <- values
+
+# correction 2721
+stations_ols_clean[stations_ols_clean$NR == "2721", "vmax"] <- 0
+
+```
+
+
+
+
+# proportion between station and strava trips
+```{r}
+
+
+
+
+stations_prop <- aggregate(cbind(trips_station, trips_strava) ~ Name, data = stations_ols, FUN = mean)
+stations_prop <- left_join(stations_prop, stations_ols %>% dplyr::select(Name, Location), by = "Name") %>% dplyr::distinct()
+stations_prop$proportion <- stations_prop$trips_strava / stations_prop$trips_station
+stations_prop <- dplyr::select(stations_prop, -NR)
+stations_prop <- distinct(stations_prop)
+
+# Calculate mean and standard deviation of proportion
+mean_prop <- mean(stations_prop$proportion)
+sd_prop <- sd(stations_prop$proportion)
+stations_prop_cant <- stations_prop %>% filter(Location == "Canton")
+stations_prop_city <- stations_prop %>% filter(Location == "City")
+mean(stations_prop_cant$proportion)
+mean(stations_prop_city$proportion)
+
+# Create categorical variable based on proportion values
+stations_prop$category <- cut(stations_prop$proportion, breaks = c(-Inf, mean_prop - sd_prop, mean_prop - 0.5 * sd_prop, mean_prop + 0.5 * sd_prop, mean_prop + sd_prop, Inf),labels = c("under μ -σ", "μ -0.5-1 σ", "μ ± 0.5 σ", "μ + 0.5-1 σ", "over μ + σ"))
+
+ggplot(stations_prop, aes(x = trips_station, y = proportion, fill = category, shape = Location)) + geom_point(size = 2) +
+  scale_fill_manual(values = c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#D55E00")) +
+  scale_shape_manual(values = c("City" = 22, "Canton" = 24)) +
+  xlab("Mean Number of Station Trips per Month") +
+  ylab("Mean Proportion of Strava Trips") +
+  ggtitle("Proportion of Captured Strava Trips Compared to Total Trips") +
+  geom_text_repel(aes(label = Name), size = 2.5, direction = "y", max.overlaps = 2) +
+  ylim(0, 0.25) +
+ guides(fill = guide_legend(title = "Measure of Proportion", override.aes = list(shape = c(21,21,21,21), fill = c("#E69F00", "#56B4E9", "#009E73", "#F0E442"))),
+         shape = guide_legend(title = "Location of Counting Station", title.position = "left")) +
+  theme(plot.title = element_text(size = 16, face = "bold"), legend.position = "bottom") +
+  scale_x_continuous(breaks = seq(0, 300000, 50000), labels = scales::comma)
+
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Proportion_Stations_Strava.tiff", width = 12, height = 6, scale = 0.8)
+
+
+```
+
+# correlation
+```{r}
+# Plot trips_strava and trips_station per month
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-01-01", "2022-01-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-02-01", "2022-02-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-03-01", "2022-03-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-04-01", "2022-04-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-05-01", "2022-05-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-06-01", "2022-06-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-07-01", "2022-07-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-08-01", "2022-08-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-09-01", "2022-09-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-10-01", "2022-10-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-11-01", "2022-11-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+ggplot(stations_ols %>% filter(Date %in% c("2021-12-01", "2022-12-01")), aes(x = trips_strava, y = trips_station, color = Name)) +
+  geom_point(size = 2) +geom_text(aes(label = Name), hjust = -0.1, vjust = 0.5, size = 1.5)+
+  labs(x = "Trips Strava", y = "Trips Station") + guides(color = FALSE)
+
+
+# Calculate correlation per station
+cor_df <- stations_ols %>%
+  group_by(Name, Location) %>%
+  summarize(
+    cor_pears = cor(trips_station, trips_strava),
+    cor_pears_log= cor(log(trips_station), log(trips_strava)),
+            cor_spear = cor(trips_station, trips_strava,method = "spearman"))
+mean(cor_df$cor_pears_log)
+median(cor_df$cor_pears_log)
+sd(cor_df$cor_pears_log)
+
+hist(stations_ols$trips_station)
+hist(stations_ols$trips_strava)
+
+cor_df_filter <- cor_df %>% dplyr::filter(Name!= "Kloten Schaffhauserstr" & Name != "Sihlpromenade" & Name != "Schulstrasse" & Name!= "Saumackerstrasse" & Name != "Glattuferweg, Opfikon")
+mean(cor_df_filter$cor_pears_log)
+median(cor_df_filter$cor_pears_log)
+sd(cor_df_filter$cor_pears_log)
+
+# Plot correlation per station
+ggplot(cor_df, aes(x = Name, y = cor_pears_log, color = Location)) +
+  geom_point(size = 2) +
+   scale_color_manual(values = c(City = "#990000", Canton = "#3333FF")) +  # Set colors for each level
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  labs(x = "Station", y = "Correlation") + ylim(0,1) +
+  ggtitle("Correlation between Station Trips and Strava Trips") +
+  theme( plot.title = element_text(size = 16, face = "bold"), legend.position = "bottom")
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Correlation_Stations_StravaV2.tiff", width = 12, height = 8, scale = 0.8)
+
+```
+
+# filter unclear or bad correlated stations out &log(strava), analysis of data 
+```{r, fig.dim = c(8, 6)}
+# remove stations where correlation is bad (to be cleared): Kloten, Schaffhauserstr Kloten, Sihlpromenade, Schulstrasse, Talstrasse, Saumackerstrasse
+
+stations_ols_clean <- stations_ols_clean %>% dplyr::filter(Name != "Kloten" & Name!= "Kloten Schaffhauserstr" & Name != "Sihlpromenade" & Name != "Schulstrasse" & Name!= "Saumackerstrasse" & Name != "ZürichWitikon" & Name != "Glattuferweg, Opfikon")
+
+# kloten + witikon IN
+stations_ols_clean_V2 <- stations_ols_clean %>% dplyr::filter(Name!= "Kloten Schaffhauserstr" & Name != "Sihlpromenade" & Name != "Schulstrasse" & Name!= "Saumackerstrasse" & Name != "Glattuferweg, Opfikon")
+
+median_stat <- stations_ols_clean_V2 %>% dplyr::group_by(Name,Location) %>% summarise(median = median(trips_station))
+
+stations_ols_clean$trips_strava <- log(stations_ols_clean$trips_strava)
+stations_ols_clean_V2$trips_strava <- log(stations_ols_clean_V2$trips_strava)
+
+# export for study area map
+stations_geo_final <- left_join(stations_ols_clean_V2,stations_merge %>% dplyr::select(OBJECTID,geometry), by = "OBJECTID")
+stations_geo_final <- dplyr::select(stations_geo_final, 1,2,3,7,25)
+stations_geo_final <- distinct(stations_geo_final)
+rows_to_delete <- c(14,15, 17, 19, 20, 25, 34, 36,38)
+stations_geo_final <- stations_geo_final[-rows_to_delete, ]
+
+st_write(stations_geo_final, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\output\\stations_geo_final_2.shp",delete_layer = TRUE,append = FALSE)
+
+hist(stations_ols_clean$month)
+sum(stations_ols_clean$season_spring)
+
+seasons_vec <- stations_ols_clean$season
+
+# Create a data frame with the frequencies of each category
+season_counts <- table(seasons_vec)
+season_counts_df <- data.frame(Category = names(season_counts), Frequency = season_counts)
+
+# Create the bar plot using ggplot2
+ggplot(season_counts_df, aes(x = Category, y = Frequency)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  labs(title = "Histogram of Categorical Character Variable",
+       x = "Categories", y = "Frequency") +
+  theme_minimal()
+
+# does not work 
+# cor(stations_ols_clean[,c("trips_strava", "crr_cmm", "dist_10_green", "dist_2_resid", "accidents", "mix_value", "PopDens", "u80_perc", "vmax", "slope")])
+stations_mean_var <- stations_ols_clean %>%
+  group_by(NR) %>%
+  summarise(mean_trips = mean(trips_station),
+            var_trips = var(trips_station))
+
+# Calculate the ratio between mean and variance
+stations_mean_var <- stations_mean_var %>%
+  mutate(ratio_mean_var = mean_trips / var_trips)
+
+stations_mean_var
+
+ggplot(stations_ols_clean, aes(x = log(trips_station))) + geom_histogram()
+ggplot(stations_ols_clean, aes(x = trips_station)) + geom_histogram() 
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Trips_Stations.tiff")
+ggplot(regression_strava, aes(x = crr_trp)) + geom_histogram() 
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Trips_Strava_tot.tiff")
+ggplot(stations_ols_clean, aes(x = trips_strava)) + geom_histogram() 
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Trips_Strava_stat.tiff")
+
+plot(trips_station ~ trips_strava, data = stations_ols_clean, col = "dodgerblue", pch = 20, cex = 1.5, main = "Trips Distribution: Strava vs. Stations")  
+dev.copy(tiff,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Trips_Stations_vs_Strava.tiff")
+dev.off()
+plot(log(trips_station) ~ trips_strava, data = stations_ols_clean, col = "dodgerblue", pch = 20, cex = 1.5)
+plot(trips_station ~ log(trips_strava), data = stations_ols_clean, col = "dodgerblue", pch = 20, cex = 1.5)
+plot(log(trips_station) ~ log(trips_strava), data = stations_ols_clean, col = "dodgerblue", pch = 20, cex = 1.5)
+
+# range(regression_strava_filt$trips_strava)
+# range(regression_strava_filt$crr_cmm)
+# range(regression_strava_filt$dist_10_green)
+# range(regression_strava_filt$dist_2_resid) 
+# range(regression_strava_filt$dist_sve)
+# range(regression_strava_filt$accidents)
+# range(regression_strava_filt$PopDens)
+# range(regression_strava_filt$slope)
+# range(regression_strava_filt$vmax)
+# range(regression_strava_filt$u80_perc)
+# range(regression_strava_filt$mix_value)
+
+range(stations_ols_clean_V2$trips_strava)
+range(stations_ols_clean_V2$crr_cmm)
+range(stations_ols_clean_V2$dist_10_green)
+range(stations_ols_clean_V2$dist_2_resid)
+range(stations_ols_clean_V2$dist_sve)
+range(stations_ols_clean_V2$accidents)
+range(stations_ols_clean_V2$PopDens)
+range(stations_ols_clean_V2$slope)
+range(stations_ols_clean_V2$vmax)
+range(stations_ols_clean_V2$u80_perc)
+range(stations_ols_clean_V2$mix_value)
+
+
+Strava_raw <- ggplot(stations_ols_clean, aes(x = exp(trips_strava))) + geom_histogram() + labs(x = "Strava Count", y = "Frequency") +
+  ggtitle("Histogram of Strava Counts") +
+  theme( plot.title = element_text(size = 16, face = "bold"))
+Strava_log <- ggplot(stations_ols_clean, aes(x = trips_strava)) + geom_histogram() + labs(x = "log (Strava Count)", y = "Frequency") +
+  ggtitle("Histogram of log-transformed Strava Counts") +
+  theme( plot.title = element_text(size = 16, face = "bold"))
+
+grid_strava <- grid.arrange(Strava_raw,Strava_log,ncol = 2)
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\StravaCounts.tiff", plot = grid_strava, width = 12, height = 6)
+
+
+```
+
+# plot variables stations vs all edges
+
+```{r}
+tiff("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\variables.tiff", width = 14, height = 24, units = "cm", res = 300)  # Specify the file name and dimensions
+par(mfrow = c(4, 2))  
+
+
+hist(stations_ols_clean_V2$trips_strava,main = "Stat.: Log(Strava Trips)", xlim = c(0,10))
+hist(regression_strava_filt$trips_strava %>% log(),main = "All: Log(Strava Trips)", xlim = c(0,10))
+
+hist(stations_ols_clean_V2$crr_cmm,main = "Stat.: Strava % Commute", xlim = c(0,100), breaks = 15)
+hist(regression_strava_filt$crr_cmm,main = "All: Strava % Commute", xlim = c(0,100), breaks = 15)
+
+# clean data frames with constant variables
+stations_variables <- stations_ols_clean_V2 %>% group_by(Name,vmax,accidents, dist_10_green,dist_2_resid,dist_sve,mix_value,PopDens,u80_perc,swiss_sep_D,slope) %>% summarise()
+
+edges_variables <- regression_strava_filt %>% group_by(OBJECTI,vmax,accidents, dist_10_green,dist_2_resid,dist_sve,mix_value,PopDens,u80_perc,swiss_sep_D,slope) %>% summarise()
+
+hist(stations_variables$accidents,main = "Stat.: Accidents", xlim = c(0,60), breaks = 10)
+hist(edges_variables$accidents,main = "All: Accidents", xlim = c(0,60), breaks = 10)
+
+hist(stations_variables$vmax,main = "Stat.: Max. Speed", xlim = c(0,3), breaks = 5)
+hist(edges_variables$vmax,main = "All: Max. Speed", xlim = c(0,3), breaks = 5)
+
+dev.off()  
+
+tiff("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\variables2.tiff", width = 14, height = 24, units = "cm", res = 300)  # Specify the file name and dimensions
+par(mfrow = c(4, 2))  
+
+hist(stations_variables$dist_10_green, main = "Stat. Dist.Green Space", xlim = c(0,1500))
+hist(edges_variables$dist_10_green,main = "All: Dist.Green Space", xlim = c(0,1500))
+
+hist(stations_variables$dist_2_resid,main = "Stat.: Dist.Residential", xlim = c(0,1000))
+hist(edges_variables$dist_2_resid,main = "All: Dist.Residential", xlim = c(0,1000), breaks = 20)
+
+hist(stations_variables$dist_sve,main = "Stat.: Dist. POI", xlim = c(0,4000),breaks = 15)
+hist(edges_variables$dist_sve,main = "All: Dist. POI", xlim = c(0,4000), breaks = 20)
+
+hist(stations_variables$mix_value,main = "Stat.: Mixed Land Use", xlim = c(0,3), breaks = 10)
+hist(edges_variables$mix_value,main = "All: Mixed Land Use", xlim = c(0,3), breaks = 10)
+
+dev.off() 
+
+tiff("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\variables3.tiff", width = 14, height = 24, units = "cm", res = 300)  # Specify the file name and dimensions
+par(mfrow = c(4, 2))
+
+hist(stations_variables$PopDens,main = "Stat.: Population Density", xlim = c(0,6000),breaks = 15)
+hist(edges_variables$PopDens,main = "All: Population Density", xlim = c(0,6000),breaks = 15)
+
+hist(stations_variables$u80_perc,main = "Stat.: % over 80y", xlim = c(0,60),breaks = 5)
+hist(edges_variables$u80_perc,main = "All: % over 80y", xlim = c(0,60),breaks = 15)
+
+hist(stations_variables$swiss_sep_D,main = "Stat.: Neighbouring Index", xlim = c(0,10),breaks = 15)
+hist(edges_variables$swiss_sep_D,main = "All: Neighbouring Index", xlim = c(0,10),breaks = 15)
+
+hist(stations_variables$slope,main = "Stat.: Slope", xlim = c(0,3),breaks = 5)
+hist(edges_variables$slope,main = "All: Slope", xlim = c(0,3),breaks = 5)
+dev.off() 
+
+
+```
+
+
+
+The data is overdispersed, as mean and variance per group is largely different. Therefore, a Poisson distribution might not be the best fit, as there, mean and variance is assumpted to be close to equal.
+
+# regression. negative binomial
+```{r}
+model_formula <- trips_station ~ trips_strava + dist_2_resid + dist_10_green + accidents +u80_perc +vmax + dist_sve + PopDens+season_winter + season_summer + season_spring  + year_2022
+  
+#+ month_2 + month_3+ month_4 + month_5+ month_6 + month_7+ month_8 + month_9 + month_10 + month_11 + month_12 
+#  + mix_value
+# + swiss_sep_D
+#  +  crr_cmm
+
+
+# +season_winter + season_summer + season_spring
+# Assuming your data frame is named 'regression_strava_filt'
+numeric_predictors <- c("crr_cmm", "dist_10_green", "dist_2_resid",
+                        "dist_sve", "accidents", "PopDens", "slope", "vmax", "u80_perc", "mix_value","swiss_sep_D")
+
+# Standardize the numeric predictors
+# stations_ols_clean[numeric_predictors] <- scale(stations_ols_clean[numeric_predictors])
+
+# stations_ols_clean$trips_strava <- log(stations_ols_clean$trips_strava)
+
+# stations_ols_clean$trips_station <- log(stations_ols_clean$trips_station)
+# stations_ols_clean$crr_cmm <- log(stations_ols_clean$crr_cmm)
+# constant <- set_units(0.0001, "m")
+# zero <- set_units(0, "m")
+# stations_ols_clean$dist_10_green<- ifelse(stations_ols_clean$dist_10_green == zero,stations_ols_clean$dist_10_green + constant, stations_ols_clean$dist_10_green)
+# stations_ols_clean$dist_10_green <- log(stations_ols_clean$dist_10_green)
+# stations_ols_clean$dist_2_resid <- log(stations_ols_clean$dist_2_resid)
+  # + season_winter + season_summer +season_spring 
+# + slope  + dist_10_green
+
+model3nb <- glm.nb(model_formula, data= stations_ols_clean)
+
+
+
+# regression_strava_filt <- regression_strava_filt %>% dplyr::rename(trips_strava = crr_trp)
+prediction_data3nb <- dplyr::anti_join(regression_strava_filt, stations_ols_clean, by= c("OBJECTI"="OBJECTID"))
+
+# enter one-hot encoding for months and years. months are aggregated to seasons.   
+prediction_data3nb <- prediction_data3nb %>% mutate(season = case_when(
+  month == 1 | month == 2 | month == 12 ~ "winter",
+  month == 3 | month == 4 | month == 5 ~ "spring",
+  month == 6 | month == 7 | month == 8 ~ "summer",
+  month == 9 | month == 10 | month == 11 ~ "autumn"
+))
+
+prediction_data3nb <- dummy_cols(prediction_data3nb, select_columns = c("season", "year"), remove_first_dummy = TRUE)
+
+
+# Standardize the numeric predictors
+# prediction_data3nb[numeric_predictors] <- scale(prediction_data3nb[numeric_predictors])
+
+regression_strava_filt_minus2nb <- prediction_data3nb
+
+# make a prediction 
+prediction3nb <- predict(model3nb, newdata = prediction_data3nb, type = "response")
+
+# add the predicted count to the prediction_data dataframe
+prediction_data3nb$count <- prediction3nb
+
+
+regression_strava_filt_minus2nb <- right_join(regression_strava_filt_minus2nb, prediction_data3nb %>% dplyr::select(OBJECTI,month,year,count), by= c("OBJECTI", "month", "year"))
+regression_strava_filt_minus2nb <- regression_strava_filt_minus2nb %>% dplyr::select(1,2,"year","count", everything())
+
+summary(model3nb)
+vif(model3nb)
+plot(model3nb)
+
+model3nb$theta
+
+# assign back to in sample predictions
+test_data_nb <- stations_ols_clean
+predictions_nb <- predict(model3nb, newdata = test_data_nb, type = "response")
+test_data_nb$predictions <- predictions_nb
+test_data_nb <- test_data_nb %>% dplyr::select(1,2,3,4,predictions, everything())
+test_data_nb$relative_diff <- ((test_data_nb$predictions - test_data_nb$trips_station) / test_data_nb$trips_station) * 100
+test_data_nb$relative_diff_abs <- abs(test_data_nb$relative_diff)
+# test_data_nb$predictions <- exp(test_data_nb$predictions)
+# test_data_nb$trips_station <- exp(test_data_nb$trips_station)
+ # test_data_nb$trips_strava <- exp(test_data_nb$trips_strava)
+
+ggplot(test_data_nb, aes(x = trips_station, y = predictions)) +
+  geom_point() +
+  geom_abline(intercept = 0, slope = 1, color = "red") +
+  labs(title = "Predicted Counts vs. Actual Counts", x = "Actual Counts", y = "Predicted Counts")
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Predicted_vs_Actuals_insample_nolog.tiff", width = 8, height = 6, dpi = 300, device = "tiff")
+
+
+# Create a scatter plot of predicted count differences
+ggplot(test_data_nb, aes(x = trips_station, y = ((predictions - trips_station)/trips_station)*100,colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+ scale_color_manual(values = rainbow(length(unique(test_data_nb$Name)))) + ggtitle("Relative difference of predictions vs actual")
+
+ggplot(test_data_nb, aes(x = trips_station, y = (predictions - trips_station),colour = Name)) +
+  geom_point() +
+  labs(x = "Actual Count", y = "Predicted Count Difference") +
+ scale_color_manual(values = rainbow(length(unique(test_data_nb$Name)))) + ggtitle("Absolute difference of predictions vs actual")
+
+
+
+
+library(ggplot2)
+
+test_data_nb <- test_data_nb %>% dplyr::arrange(Location)
+
+ggplot(test_data_nb, aes(x = Name, y = relative_diff, fill = Location)) +
+  geom_boxplot(color = "black", alpha = 0.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Station Name", y = "Relative Difference (%)", fill = "Location") +
+  scale_fill_manual(values = c("City" = "Red", "Canton" = "Blue")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1, size = 6)) +
+  coord_cartesian(ylim = c(-50, 400)) +
+  guides(fill = guide_legend(title = "Location", title.position = "top", ncol = 1)) +
+  ggtitle("Prediction Accuracy after Station")
+ggsave("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Stations_relative_accuracy_boxplot_nolog.tiff")
+
+
+# # Calculate the percentage of predicted segments with each relative difference
+# percentage <- test_data_nb <- test_data_nb %>%
+#   mutate(percentage = relative_diff_abs / nrow(test_data_nb) * 100)
+# # Create the ggplot object
+# ggplot(test_data_nb, aes(x = relative_diff_abs, y = percentage)) +
+#   geom_point(color = "blue") +
+#   labs(x = "Relative Difference (%)", y = "Percentage of Predicted Segments") +
+#   theme_minimal()
+
+
+```
+
+
+```{r}
+
+
+
+```
+
+
+#assessment
+
+```{r}
+
+# Calculate accuracy metrics
+mae <- mean(abs(test_data_nb$trips_station - test_data_nb$predictions))
+mse <- mean((test_data_nb$trips_station - test_data_nb$predictions)^2)
+rmse <- sqrt(mse)
+mpe <- mean((test_data_nb$predictions - test_data_nb$trips_station) / test_data_nb$trips_station) * 100
+mape <- mean(abs((test_data_nb$predictions - test_data_nb$trips_station) / test_data_nb$trips_station)) * 100
+
+# Print the accuracy metrics
+model_formula
+summary(model3nb)
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+cat("Mean Percentage Error (MPE):", mpe, "%\n")
+cat("Mean Absolute Percentage Error (MAPE):", mape, "%\n")
+
+model3nb$null.deviance - model3nb$deviance
+
+library(ggplot2)
+
+# Obtain residuals from the model
+residuals <- residuals.glm(model3nb)
+
+# Plot residuals against fitted values
+ggplot(data.frame(residuals = residuals, fitted_values = fitted(model3nb)), aes(x = fitted_values, y = residuals)) +
+  geom_point() +
+  labs(x = "Fitted Values", y = "Residuals") +
+  theme_minimal()
+
+
+
+
+
+
+
+```
+
+
+# try of transformations
+
+```{r}
+
+model_formula <- trips_station ~ trips_strava +  crr_cmm +season_winter + season_summer + season_spring+ dist_2_resid + dist_10_green + accidents + mix_value +u80_perc +vmax + dist_sve + PopDens+  + year_2022
+  
+# month_2 + month_3+ month_4 + month_5+ month_6 + month_7+ month_8 + month_9 + month_10 + month_11 + month_12
+
+# Assuming your data frame is named 'regression_strava_filt'
+numeric_predictors <- c("trips_strava", "crr_cmm", "dist_10_green", "dist_2_resid",
+                        "dist_sve", "accidents", "PopDens", "slope", "vmax", "u80_perc", "mix_value")
+
+# Standardize the numeric predictors
+ # stations_ols_clean[numeric_predictors] <- log(stations_ols_clean[numeric_predictors])
+ stations_ols_clean$trips_station <- log(stations_ols_clean$trips_strava)
+
+
+  # + season_winter + season_summer +season_spring 
+# + slope  + dist_10_green
+
+model3nb <- glm.nb(model_formula, data= stations_ols_clean)
+
+
+
+# regression_strava_filt <- regression_strava_filt %>% dplyr::rename(trips_strava = crr_trp)
+prediction_data3nb <- dplyr::anti_join(regression_strava_filt, stations_ols_clean, by= c("OBJECTI"="OBJECTID"))
+
+# enter one-hot encoding for months and years. months are aggregated to seasons.   
+prediction_data3nb <- prediction_data3nb %>% mutate(season = case_when(
+  month == 1 | month == 2 | month == 12 ~ "winter",
+  month == 3 | month == 4 | month == 5 ~ "spring",
+  month == 6 | month == 7 | month == 8 ~ "summer",
+  month == 9 | month == 10 | month == 11 ~ "autumn"
+))
+
+prediction_data3nb <- dummy_cols(prediction_data3nb, select_columns = c("season", "year"), remove_first_dummy = TRUE)
+
+
+# Standardize the numeric predictors
+# prediction_data3nb[numeric_predictors] <- scale(prediction_data3nb[numeric_predictors])
+
+regression_strava_filt_minus2nb <- prediction_data3nb
+
+# make a prediction 
+prediction3nb <- predict(model3nb, newdata = prediction_data3nb, type = "response")
+
+# add the predicted count to the prediction_data dataframe
+prediction_data3nb$count <- prediction3nb
+
+
+regression_strava_filt_minus2nb <- right_join(regression_strava_filt_minus2nb, prediction_data3nb %>% dplyr::select(OBJECTI,month,year,count), by= c("OBJECTI", "month", "year"))
+regression_strava_filt_minus2nb <- regression_strava_filt_minus2nb %>% dplyr::select(1,2,"year","count", everything())
+
+summary(model3nb)
+vif(model3nb)
+
+
+
+
+```
+
+
+# try out with less variables
+```{r}
+# 
+# model_formula <- trips_station ~ trips_strava +  crr_cmm + dist_10_green + dist_2_resid + accidents + mix_value +u80_perc+ slope  + PopDens  +vmax 
+
+
+
+model4nb1 <- glm.nb(trips_station ~ trips_strava, data= stations_ols_clean)
+
+model4nb2 <- glm.nb(trips_station ~ trips_strava + crr_cmm, data= stations_ols_clean)
+
+model4nb3 <- glm.nb(trips_station ~ trips_strava + crr_cmm + slope, data= stations_ols_clean)
+
+model4nb4 <- glm.nb(trips_station ~ trips_strava + crr_cmm  + season_spring + season_winter + season_summer, data= stations_ols_clean)
+
+model4nb5 <- glm.nb(trips_station ~ trips_strava + crr_cmm + season_winter + season_summer + season_spring +mix_value, data= stations_ols_clean)
+
+model4nb6 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value, data= stations_ols_clean)
+
+model4nb7 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +slope, data= stations_ols_clean)
+
+model4nb8 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +slope + PopDens, data= stations_ols_clean)
+
+model4nb9 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +slope +PopDens + dist_2_resid, data= stations_ols_clean)
+
+model4nb10 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +slope + PopDens + dist_10_green, data= stations_ols_clean)
+
+model4nb11 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +slope + PopDens + accidents, data= stations_ols_clean)
+
+model4nb12 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +PopDens +accidents +u80_perc, data= stations_ols_clean)
+
+model4nb13 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +PopDens +accidents +u80_perc +vmax, data= stations_ols_clean)
+
+model4nb14 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +PopDens +accidents +u80_perc +vmax +season_winter + season_summer + season_spring + year_2022, data= stations_ols_clean)
+
+model4nb15 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +PopDens +accidents +u80_perc +vmax +dist_sve, data= stations_ols_clean)
+
+model4nb16 <- glm.nb(trips_station ~ trips_strava + crr_cmm +mix_value +PopDens +accidents +u80_perc +vmax +dist_sve +swiss_sep_D, data= stations_ols_clean)
+
+model3qp <- glm(trips_station ~ trips_strava + crr_cmm +mix_value +PopDens +accidents +u80_perc +vmax +season_winter + season_summer + season_spring + year_2022,family = "quasipoisson", data= stations_ols_clean)
+
+summary(model4nb1)
+summary(model4nb2) # AIC -20 
+summary(model4nb3) # AIC -140
+summary(model4nb4) # AIC +4 zu 2)
+summary(model4nb5) # AIC -550 zu 4)
+summary(model4nb6) # AIC -3 zu 5), seasons removed!
+summary(model4nb7) # AIC -140 zu 6)
+summary(model4nb8) # AIC -190 zu 7)
+summary(model4nb9) # AIC -3 zu 8) 
+summary(model4nb10)# AIC +5 zu 8) -> wenn dann dist zu resid, aber beides schwach
+summary(model4nb11)# accidents und u80_perc beide ca -40
+summary(model4nb12)# u80_perc ist besser als slope. 
+summary(model4nb13)# leicht besser mit vmax
+summary(model4nb14)# leicht besser mit vmax
+summary(model4nb15)# dist_sve verbessert
+summary(model4nb16)# 
+
+vif(model4nb1)
+vif(model4nb2)
+vif(model4nb3)
+vif(model4nb4)
+vif(model4nb5)
+vif(model4nb5)
+vif(model4nb5)
+vif(model4nb8)
+vif(model4nb13)
+vif(model4nb15)
+
+
+model4nb14_quant <- qresiduals(model3nb)
+
+summary(model4nb14_quant)
+
+
+plot(model4nb14)
+
+# Plotting the histogram of quantile residuals
+hist(model4nb14_quant, breaks = 20, col = "lightblue", main = "Histogram of Quantile Residuals")
+
+# Identifying observations with large quantile residuals
+outliers <- which(abs(model4nb14_quant) > 2) # Adjust the threshold value as needed
+
+# Printing the index of outlier observations
+print(outliers)
+
+# Creating a quantile-quantile plot of observed quantiles vs. expected quantiles
+qqnorm(model4nb14_quant)
+
+
+
+```
+
+
+# try the real shit. regression. poisson
+```{r}
+
+
+model_formula <- trips_station ~ trips_strava +  crr_cmm + dist_10_green + dist_2_resid + accidents + mix_value +u80_perc+ slope +vmax 
+
+# + month_2 + month_3+ month_4 + month_5+ month_6 + month_7+ month_8 + month_9 + month_10 + month_11 + month_12
+
+  # + season_winter + season_summer +season_spring 
+
+
+
+
+model3 <- glm(model_formula,family = "poisson", data= stations_ols_clean)
+
+
+# regression_strava_filt <- regression_strava_filt %>% dplyr::rename(trips_strava = crr_trp)
+prediction_data3 <- dplyr::anti_join(regression_strava_filt, stations_ols_clean, by= c("OBJECTI"="OBJECTID"))
+
+# prediction_data3 <- dummy_cols(prediction_data3nb, select_columns = c("month", "year"), remove_first_dummy = TRUE)
+
+regression_strava_filt_minus2 <- prediction_data3
+# make a prediction 
+prediction3 <- predict(model3, newdata = prediction_data3, type = "response")
+
+
+# add the predicted count to the prediction_data dataframe
+prediction_data3$count <- prediction3
+
+
+regression_strava_filt_minus2 <- right_join(regression_strava_filt_minus2, prediction_data3 %>% dplyr::select(OBJECTI,month,year,count), by= c("OBJECTI", "month", "year"))
+regression_strava_filt_minus2 <- regression_strava_filt_minus2 %>% dplyr::select(1,2,"year","count", everything())
+
+summary(model3)
+vif(model3)
+
+plot(model3)
+
+# coef_exp = data.frame(exp(coef(model3)))
+# coef_exp
+
+mean(stations_ols_clean$dist_10_green)
+mean(stations_ols_clean$dist_10_green)
+mean(stations_ols_clean$dist_10_green)
+mean(stations_ols_clean$dist_10_green)
+
+
+
+
+
+
+```
+
+
+
+# try the real shit. regression. poisson LOG
+```{r}
+
+
+model_formula <- trips_station ~ trips_strava +  crr_cmm + dist_10_green + dist_2_resid + accidents + mix_value +u80_perc+ slope  +vmax + PopDens  +dist_sve
+
+# + month +year
+
+
+
+##### log??!
+
+stations_ols_clean_log <- stations_ols_clean %>% dplyr::mutate(trips_strava = log(trips_strava))
+
+model3log <- glm(model_formula,family = "poisson", data= stations_ols_clean_log)
+
+
+prediction_data3log <- dplyr::anti_join(regression_strava_filt, stations_ols_clean_log, by= c("OBJECTI"="OBJECTID"))
+prediction_data3log <- prediction_data3log %>% dplyr::mutate(month = as.factor(month),
+                                                       year = as.factor(year))
+regression_strava_filt_minus2 <- prediction_data3log
+
+# make a prediction 
+prediction3log <- predict(model3log, newdata = prediction_data3log, type = "response")
+
+# add the predicted count to the prediction_data dataframe
+prediction_data3log$count <- prediction3log
+
+
+regression_strava_filt_minus2log <- right_join(regression_strava_filt_minus2, prediction_data3log %>% dplyr::select(OBJECTI,month,year,count), by= c("OBJECTI", "month", "year"))
+regression_strava_filt_minus2log <- regression_strava_filt_minus2log %>% dplyr::select(1,2,"year","count", everything())
+
+summary(model3log)
+vif(model3log)
+
+plot(model3log)
+
+# coef_exp = data.frame(exp(coef(model3)))
+# coef_exp
+
+```
+
+
+
+
+

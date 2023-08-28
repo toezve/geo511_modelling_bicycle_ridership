@@ -1,0 +1,305 @@
+---
+title: "regression"
+output: html_document
+date: "2023-05-05"
+---
+
+```{r}
+
+
+library(sp)
+library(sf)
+library(tmap)
+library(leaflet)
+library(igraph)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(progress)
+library(MASS)
+library(ggplot2)
+library(car)
+library(tidyverse)
+
+```
+
+# additional: add edge 100010 (Bucheggplatz) to the data set -> important for test data of GLMMs
+
+```{r}
+
+
+# Extract entries and remove columns
+selected_entries <- stations_ols_clean[stations_ols_clean$OBJECTID == 100010, ]
+selected_entries <- selected_entries[, !names(selected_entries) %in% "NR"]
+selected_entries <- selected_entries[, !names(selected_entries) %in% "trips_station"]
+selected_entries <- selected_entries[, !names(selected_entries) %in% "Location"]
+selected_entries <- selected_entries[, !names(selected_entries) %in% "Name"]
+
+selected_entries <- selected_entries %>% mutate(trips_strava = exp(trips_strava))
+
+
+# rename
+
+selected_entries <- selected_entries %>% dplyr::rename(OBJECTI = OBJECTID)
+
+
+# Assuming col_order is the desired column order in regression_strava
+col_order <- colnames(regression_strava_filt)
+
+# Reorder columns in selected_entries to match col_order
+selected_entries <- selected_entries %>% dplyr::select(all_of(col_order))
+
+```
+
+
+# prepare av network with all available geo variables
+```{r}
+
+regression_strava <- av_network_corrected_0510 %>% dplyr::select(OBJECTI, month, crr_trp, crr_cmm) %>% st_drop_geometry()
+regression_strava <- right_join(regression_strava, as.data.frame(avnetz_accid %>% dplyr::select(OBJECTID,dist_10_green,dist_2_resid,accidents)%>% st_drop_geometry()), by = c("OBJECTI"="OBJECTID"))
+regression_strava <- right_join(regression_strava, as.data.frame(av_midpoints_mix_landuse %>% dplyr::select(OBJECTID,mix_value)%>% st_drop_geometry()), by = c("OBJECTI"="OBJECTID"))
+regression_strava <- right_join(regression_strava, as.data.frame(av_midpoints_r %>% dplyr::select(OBJECTID,PopDens, u80_perc, dist_sve, swiss_sep_D)%>% st_drop_geometry()), by = c("OBJECTI"="OBJECTID"))
+regression_strava <- right_join(regression_strava, as.data.frame(av_midpoints_speed %>% dplyr::select(OBJECTID,vmax)%>% st_drop_geometry()), by = c("OBJECTI"="OBJECTID"))
+regression_strava <- right_join(regression_strava, as.data.frame(slope_zero %>% dplyr::select(OBJECTI,slope) %>% st_drop_geometry()), by = "OBJECTI")
+
+# filter 0 values in trips?
+# regression_strava <- regression_strava %>% filter(crr_trp != 0) 
+
+regression_strava <- regression_strava %>% 
+  mutate(Date = ymd(month))
+
+regression_strava <- regression_strava %>% mutate(year = year(ymd(Date)),
+         month = month(ymd(Date)))
+
+regression_strava <- regression_strava %>% mutate(season = case_when(
+  month == 1 | month == 2 | month == 12 ~ "winter",
+  month == 3 | month == 4 | month == 5 ~ "spring",
+  month == 6 | month == 7 | month == 8 ~ "summer",
+  month == 9 | month == 10 | month == 11 ~ "autumn"
+))
+
+regression_strava<- dummy_cols(regression_strava, select_columns = c("season", "year"), remove_first_dummy = TRUE)
+
+
+# per Edge over 2000 trips in 24 months, otherwise its not considered
+regression_strava_filt <- regression_strava %>%
+  group_by(OBJECTI) %>%
+  summarize(sum_crr_trp = sum(crr_trp)) %>%
+  filter(sum_crr_trp > 2000)
+
+regression_strava_filt <- regression_strava_filt %>% 
+  inner_join(regression_strava, by = "OBJECTI")
+
+
+regression_strava_filt <- dplyr::select(regression_strava_filt,-sum_crr_trp)
+regression_strava_filt <- dplyr::select(regression_strava_filt,-season_NA)
+regression_strava_filt <- dplyr::select(regression_strava_filt,-year_NA)
+regression_strava_filt <- dplyr::select(regression_strava_filt,-Date)
+regression_strava_filt <- regression_strava_filt %>% dplyr::rename(trips_strava = crr_trp)
+
+# add edge 100010 (station Bucheggplatz)
+regression_strava_filt <- rbind(regression_strava_filt, selected_entries)
+
+# some queries
+anzahl <- unique(regression_strava_filt$OBJECTI)
+anzahl2 <- unique(regression_strava$OBJECTI)
+dplyr::n_distinct(anzahl)
+
+range(regression_strava_filt$accidents)
+range(regression_strava_filt$dist_10_green)
+range(regression_strava_filt$dist_2_resid)
+range(regression_strava_filt$dist_sve)
+range(regression_strava_filt$PopDens)
+range(regression_strava_filt$u80_perc)
+range(regression_strava_filt$swiss_sep_D)
+
+
+```
+
+# how well do the other variables predict the strava counts?
+```{r}
+
+
+hist(regression_strava$crr_trp)
+
+# Fit a multiple linear regression model with all variables
+model_a <- glm.nb(trips_strava ~ crr_cmm  + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_spring + season_summer + season_winter + year_2022, data = regression_strava_filt)
+
+# Display the summary of the model
+summary(model_a)
+performance::r2(model_a)
+1-(model_a$deviance/model_a$null.deviance)
+
+
+# Check for multicollinearity using the vif function
+vif(model_a)
+
+
+
+
+
+```
+
+# 10% subset randomly
+```{r}
+
+# create a 10% subset of the counts variable
+set.seed(123) # set seed for reproducibility
+count_subset <- regression_strava %>% sample_frac(0.1)
+
+# remove the subset from the original dataset
+regression_strava_minus <- anti_join(regression_strava, count_subset, by = "OBJECTI")
+
+# train a linear regression model with the subset
+model2 <- lm(crr_trp ~ ., data = count_subset)
+
+# create a new dataframe for prediction with the same variables as the original dataset
+prediction_data <- regression_strava_minus %>% dplyr::select(-crr_trp) %>%  # remove the count variable
+  # slice(1) %>%  # select the first row as an example
+  mutate(count = NA)  # add a new column for the predicted count, initially with NA values
+
+# make a prediction with the model
+prediction <- predict(model2, newdata = prediction_data)
+
+# add the predicted count to the prediction_data dataframe
+prediction_data$count <- prediction
+
+# view the prediction
+prediction_data
+
+
+summary(model2)
+
+```
+
+# 10% subset of edges, all months per edge FILTERED
+```{r}
+
+# create a vector of OBJECTI values for the edges
+reg_edges <- unique(regression_strava_filt$OBJECTI)
+
+# randomly select 10% of the edges
+set.seed(122) # set seed for reproducibility
+reg_edges_subset <- sample(reg_edges, round(0.1*length(reg_edges)))
+
+# regression_strava_filt <- regression_strava_filt %>% dplyr::rename(trips_strava = crr_trp)
+
+# subset the data to only include the selected edges
+count_subset <- regression_strava_filt %>% 
+  filter(OBJECTI %in% reg_edges_subset) %>%
+  group_by(OBJECTI) %>%
+  slice(1:n())
+
+
+
+# remove subset
+regression_strava_filt_minus <- dplyr::anti_join(regression_strava_filt, count_subset, by = "OBJECTI")
+
+
+
+
+# train the linear regression model with count_subset
+model2 <- glm.nb(trips_strava ~ crr_cmm + dist_2_resid + dist_10_green + accidents + mix_value +u80_perc +vmax + dist_sve + PopDens+ swiss_sep_D + month_2 + month_3+ month_4 + month_5+ month_6 + month_7+ month_8 + month_9 + month_10 + month_11 + month_12  + year_2022, data = count_subset)
+
+# create a new dataframe for prediction with the same variables as the original dataset
+prediction_data <- regression_strava_filt_minus %>% dplyr::select(-trips_strava) %>%  # remove the count variable
+  # slice(1) %>%  # select the first row as an example
+  mutate(count = NA)  # add a new column for the predicted count, initially with NA values
+
+# make a prediction with the model
+prediction <- predict(model2, newdata = prediction_data)
+
+# add the predicted count to the prediction_data dataframe
+prediction_data$count <- prediction
+
+# view the prediction
+sum(is.na(prediction_data$count))
+regression_strava_filt_minus <- right_join(regression_strava_filt_minus, prediction_data %>% dplyr::select(OBJECTI,month,year,count), by= c("OBJECTI", "month", "year"))
+regression_strava_filt_minus <- regression_strava_filt_minus %>% dplyr::select(1,2,3,14,everything())
+
+
+summary(model2)
+
+# count_subset$residuals <- residuals(model2)
+# 
+
+# 
+# model2$residual
+
+```
+
+
+# 10% subset of edges, all months per edge not FILTERED
+```{r}
+
+# create a vector of OBJECTI values for the edges
+reg_edges <- unique(regression_strava$OBJECTI)
+
+# randomly select 10% of the edges
+set.seed(122) # set seed for reproducibility
+reg_edges_subset <- sample(reg_edges, round(0.1*length(reg_edges)))
+
+# subset the data to only include the selected edges
+count_subset <- regression_strava %>% 
+  filter(OBJECTI %in% reg_edges_subset) %>%
+  group_by(OBJECTI) %>%
+  slice(1:n())
+
+# remove subset
+
+regression_strava_minus <- dplyr::anti_join(regression_strava, count_subset, by = "OBJECTI")
+
+# train the linear regression model with count_subset
+model2 <- lm(crr_trp ~ ., data = count_subset)
+
+# create a new dataframe for prediction with the same variables as the original dataset
+prediction_data <- regression_strava_minus %>% dplyr::select(-crr_trp) %>%  # remove the count variable
+  # slice(1) %>%  # select the first row as an example
+  mutate(count = NA)  # add a new column for the predicted count, initially with NA values
+
+# make a prediction with the model
+prediction <- predict(model2, newdata = prediction_data)
+
+# add the predicted count to the prediction_data dataframe
+prediction_data$count <- prediction
+
+# view the prediction
+sum(is.na(prediction_data$count))
+regression_strava_minus <- right_join(regression_strava_minus, prediction_data %>% dplyr::select(OBJECTI,month,year,count), by= c("OBJECTI", "month", "year"))
+regression_strava_minus <- regression_strava_minus %>% dplyr::select(1,2,3,14,everything())
+
+
+summary(model2)
+
+# count_subset$residuals <- residuals(model2)
+# 
+# residualPlot(model2)
+# 
+# model2$residual
+
+```
+
+#rejoin um residuals zu plotten
+```{r}
+
+regression_strava_filt_minus <- right_join(AVnetz %>% dplyr::select(OBJECTID, geometry), regression_strava_filt_minus, by= c("OBJECTID"="OBJECTI"))
+
+regression_strava_filt_minus$residual <- abs(regression_strava_filt_minus$crr_trp - regression_strava_filt_minus$count)
+
+
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+    tm_shape(regression_strava_filt_minus) +tm_lines(col = "residual", lwd = 4, palette = "YlOrRd", breaks = seq(-500,500,by = 200)) +
+  tm_shape(stations_merge) + tm_dots(col = "black", size = 0.01) 
+
+
+```
+
+
+
+
+
+
+
+

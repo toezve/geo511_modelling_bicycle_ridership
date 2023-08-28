@@ -1,0 +1,376 @@
+---
+title: "LASSO"
+output: html_document
+date: "2023-05-12"
+---
+
+```{r}
+
+library(tidyverse)
+library(sp)
+# install.packages("sf", repos = "https://r-spatial.r-universe.dev")
+library(sf)
+library(tmap)
+library(leaflet)
+library(igraph)
+library(nngeo)
+library(lwgeom)
+library(lubridate)
+library(tidygraph)
+library(progress)
+library(ggplot2)
+library(corrr)
+library(dplyr)
+library(MASS)
+library(car)
+library(glmnet)
+library(mpath)
+# library(caret) #ERROR
+
+```
+
+# old
+```{r}
+set.seed(123) # set random seed for reproducibility
+train_stations_v2 <- unique(stations_ols_clean$OBJECTID)
+train_stations <- sample(train_stations_v2, round(0.85*length(train_stations_v2)))
+train_data <- stations_ols_clean %>% dplyr::filter(OBJECTID %in% train_stations_v2)
+test_data <- stations_ols_clean %>% dplyr::filter(!OBJECTID %in% train_stations_v2)
+
+# Separate response & predictor
+train_response <- train_data$trips_station
+train_predictors <- train_data[,c("trips_strava", "crr_cmm", "dist_10_green", "dist_2_resid", "accidents", "mix_value", "PopDens", "u80_perc", "vmax", "slope", "dist_sve", "swiss_sep_D")]
+
+# # Scale  predictor variables
+# train_predictors_num <- scale(train_predictors[,c("trips_strava","crr_cmm", "dist_10_green", "dist_2_resid", "accidents","mix_value","PopDens", "u80_perc", "slope", "dist_sve", "vmax", "swiss_sep_D")])
+# train_predictors_fac <- train_predictors[,c("month", "year", "vmax")]
+# train_predictors_fac <- model.matrix(~., data = train_predictors_fac)[,-1] # Exclude the intercept column
+train_predictors_all <- train_predictors_num
+
+# train_numeric_predictors <- scale(train_predictors[, c("month", "year")])
+# Convert predictor variables to matrix
+# train_predictors_all <- as.matrix(train_predictors_all)
+
+# Scale the predictor variables
+# train_predictors_all <- scale(train_predictors_all)
+
+# Set up cross-validation
+cv <- cv.glmnet(train_predictors_all, train_response, alpha=1, nfolds=10)
+
+# Plot the cross-validation results
+plot(cv)
+cv$
+
+# Select the best value of lambda
+best_lambda <- cv$lambda.min
+
+# Fit the Lasso model using the best lambda value
+lasso_model <- glmnet(train_predictors_all, train_response, family = negative.binomial(theta = 6.4), alpha=1, lambda= best_lambda)
+
+
+# Extract the coefficients of the Lasso model
+lasso_coef <- coef(lasso_model, s = "lambda.min")
+
+# Identify the significant predictors
+significant_predictors <- rownames(lasso_coef)[lasso_coef[, 1] != 0]
+significant_predictors <- sort(significant_predictors, decreasing = TRUE)
+
+significant_predictors
+lasso_coef 
+
+
+
+```
+
+
+# new
+
+```{r}
+set.seed(123) # set random seed for reproducibility
+
+# stations sampling
+# train_stations_v2 <- unique(stations_ols_clean$OBJECTID)
+# train_stations_v2 <- sample(train_stations_v2, round(0.80*length(train_stations_v2)))
+# train_data <- stations_ols_clean %>% dplyr::filter(OBJECTID %in% train_stations_v2)
+# test_data <- stations_ols_clean %>% dplyr::filter(!OBJECTID %in% train_stations_v2)
+
+
+# #random sampling
+train_indices <- sample(nrow(stations_ols_clean), 0.8 * nrow(stations_ols_clean))
+
+train_data <- stations_ols_clean[train_indices, ]
+
+test_data <- stations_ols_clean[-train_indices, ]
+
+# # Separate response & predictor
+train_response <- train_data$trips_station
+train_predictors <- train_data[,c("trips_strava","season_spring", "season_summer","season_winter", "year_2022", "crr_cmm", "dist_10_green", "dist_2_resid", "accidents", "mix_value", "PopDens", "u80_perc", "vmax", "slope", "dist_sve", "swiss_sep_D")]
+# , "(1|OBJECTID)"
+# # Scale  predictor variables
+# train_predictors_num <- scale(train_predictors[,c("trips_strava","crr_cmm", "dist_10_green", "dist_2_resid", "accidents","mix_value","PopDens", "u80_perc", "slope", "dist_sve", "vmax", "swiss_sep_D")])
+# 
+# train_predictors_all <- train_predictors_num
+# 
+# # train_numeric_predictors <- scale(train_predictors[, c("month", "year")])
+# # Convert predictor variables to matrix
+# train_predictors <- as.matrix(train_predictors)
+# 
+# # Scale the predictor variables
+# # train_predictors_all <- scale(train_predictors_all)
+
+# Set up cross-validation
+cv <- cv.glmregNB(trips_station ~ trips_strava + crr_cmm + swiss_sep_D + mix_value+ dist_2_resid + dist_10_green + accidents +u80_perc +vmax + dist_sve + PopDens + slope + season_spring + season_summer + season_winter + year_2022, data = train_data, nfolds=10)
+
+#  + (1|OBJECTID)  + year_2022
+# cv <- cv.glmnet(train_predictors, train_response, alpha=1, nfolds=10)
+
+# Plot the cross-validation results
+plot(cv)
+
+
+# Select the best value of lambda
+best_lambda <- cv$lambda.optim
+# best_lambda <- cv$lambda.min
+
+# Fit the Lasso model using the best lambda value
+lasso_model <- glmregNB(trips_station ~ trips_strava + crr_cmm + swiss_sep_D + mix_value+ dist_2_resid + dist_10_green + accidents +u80_perc +vmax + dist_sve + PopDens + slope + season_spring + season_summer + season_winter +year_2022, data = train_data, alpha=1, lambda= best_lambda)
+
+# lasso_model <- glmnet(train_predictors, train_response, family = negative.binomial(theta = 6.4), alpha=1, lambda= best_lambda)
+
+
+# Extract the coefficients of the Lasso model
+lasso_coef <- coef(lasso_model)
+
+
+lasso_coef
+
+
+
+prediction_lasso <- predict(object = lasso_model, newx = test_data, type = "response")
+test_data$count <- prediction_lasso
+test_data <- test_data %>% dplyr::select(1,2,3,4,25,8,9,everything())
+
+# Calculate accuracy metrics
+mae <- mean(abs(test_data$trips_station - test_data$count))
+mse <- mean((test_data$trips_station - test_data$count)^2)
+rmse <- sqrt(mse)
+mpe <- mean((test_data$count - test_data$trips_station) / test_data$trips_station) * 100
+mape <- mean(abs((test_data$count - test_data$trips_station) / test_data$trips_station)) * 100
+
+# Print the accuracy metrics
+summary(lasso_model)
+cat("Mean Absolute Error (MAE):", mae, "\n")
+cat("Mean Squared Error (MSE):", mse, "\n")
+cat("Root Mean Squared Error (RMSE):", rmse, "\n")
+cat("Mean Percentage Error (MPE):", mpe, "%\n")
+cat("Mean Absolute Percentage Error (MAPE):", mape, "%\n")
+
+
+```
+
+# find the optimal lambda (ca 23min) Station Sampling
+```{r}
+
+
+n_iterations <- 10  # Number of iterations/repetitions
+lambda_values <- vector(length = n_iterations)  # Vector to store the lambda values
+
+for (i in 1:n_iterations) {
+  set.seed(i)  # Set a different random seed for each iteration
+  
+  # Perform data splitting
+  train_stations_v2 <- unique(stations_ols_clean_V2$OBJECTID)
+  train_stations_v2 <- sample(train_stations_v2, round(0.80 * length(train_stations_v2)))
+  train_data <- stations_ols_clean_V2 %>% dplyr::filter(OBJECTID %in% train_stations_v2)
+  test_data <- stations_ols_clean_V2 %>% dplyr::filter(!OBJECTID %in% train_stations_v2)
+  
+  # Set up cross-validation
+  cv <- cv.glmregNB(trips_station ~ trips_strava + crr_cmm  + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_spring + season_summer + season_winter + year_2022, data = train_data, nfolds = 10)
+  
+  # Select the best value of lambda
+  best_lambda <- cv$lambda.optim
+  
+  # Store the best lambda value
+  lambda_values[i] <- best_lambda
+}
+
+# Compute the average and standard deviation of the lambda values
+lambda_average_station <- mean(lambda_values)
+lambda_sd_station<- sd(lambda_values)
+lambda_median_station <- median(lambda_values)
+
+
+
+# Print the average and standard deviation of the lambda values
+cat("Average lambda:", lambda_average, "\n")
+cat("Standard deviation of lambda:", lambda_sd, "\n")
+cat("Median lambda:",lambda_median, "\n")
+
+```
+
+
+
+# stability selection of variables (loop ca. 3min) Station Sampling
+```{r}
+
+
+# Initialize an empty matrix to store the variable selection results
+n_variables <- 16  # Exclude the response variable
+n_iterations <- 100  # Number of stability selection iterations
+stability_matrix <- matrix(0, nrow = n_variables, ncol = n_iterations)
+
+# Perform stability selection
+for (i in 1:n_iterations) {
+  set.seed(i)  # Set a different random seed for each iteration
+  
+  # Perform data splitting
+  train_stations_v2 <- unique(stations_ols_clean_v2$OBJECTID)
+  train_stations_v2 <- sample(train_stations_v2, round(0.80 * length(train_stations_v2)))
+  
+  train_data <- stations_ols_clean_v2 %>% dplyr::filter(OBJECTID %in% train_stations_v2) %>% dplyr::select(trips_station,trips_strava,crr_cmm,accidents,vmax,dist_10_green,dist_2_resid, dist_sve,mix_value,PopDens,u80_perc,swiss_sep_D,slope,season_spring,season_summer,season_winter, year_2022)
+  test_data <- stations_ols_clean_V2 %>% dplyr::filter(!OBJECTID %in% train_stations_v2)
+  
+  # Fit the Lasso model using the best lambda value
+  lasso_model <- glmregNB(trips_station ~ trips_strava + crr_cmm  + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_spring + season_summer + season_winter + year_2022, data = train_data, alpha = 1, lambda = lambda_median_station)
+  
+
+# Extract the selected variables with non-zero coefficients
+selected_vars <- names(coef(lasso_model))[coef(lasso_model) != 0][-1]  # Exclude the intercept
+
+  
+  # Mark the selected variables in the stability matrix
+  for (j in 1:length(selected_vars)) {
+    var_index <- match(selected_vars[j], colnames(train_data %>% dplyr::select(-trips_station)))
+    stability_matrix[var_index, i] <- 1
+  }
+}
+
+
+# Calculate the stability scores for each variable
+stability_scores <- rowMeans(stability_matrix)
+
+stability_scores
+```
+
+
+
+
+
+# find the optimal lambda (ca 23min) Random Sampling
+```{r}
+
+
+n_iterations <- 10  # Number of iterations/repetitions
+lambda_values <- vector(length = n_iterations)  # Vector to store the lambda values
+
+for (i in 1:n_iterations) {
+  set.seed(i)  # Set a different random seed for each iteration
+  
+# #random sampling
+train_indices <- sample(nrow(stations_ols_clean_V2), 0.8 * nrow(stations_ols_clean_V2))
+
+train_data <- stations_ols_clean_V2[train_indices, ]
+
+test_data <- stations_ols_clean_V2[-train_indices, ]
+  
+  # Set up cross-validation
+  cv <- cv.glmregNB(trips_station ~ trips_strava + crr_cmm  + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_spring + season_summer + season_winter + year_2022, data = train_data, nfolds = 10)
+  
+  # Select the best value of lambda
+  best_lambda <- cv$lambda.optim
+  
+  # Store the best lambda value
+  lambda_values[i] <- best_lambda
+}
+
+# Compute the average and standard deviation of the lambda values
+lambda_average_random <- mean(lambda_values)
+lambda_sd_random<- sd(lambda_values)
+lambda_median_random <- median(lambda_values)
+
+
+# Print the average and standard deviation of the lambda values
+cat("Average lambda:", lambda_average, "\n")
+cat("Standard deviation of lambda:", lambda_sd, "\n")
+cat("Median lambda:",lambda_median, "\n")
+
+```
+
+
+
+# stability selection of variables (loop ca. 3min) Random Sampling
+```{r}
+
+
+# Initialize an empty matrix to store the variable selection results
+n_variables <- 16  # Exclude the response variable
+n_iterations <- 100  # Number of stability selection iterations
+stability_matrix_random <- matrix(0, nrow = n_variables, ncol = n_iterations)
+
+# Perform stability selection
+for (i in 1:n_iterations) {
+  set.seed(i)  # Set a different random seed for each iteration
+  
+  # Perform data splitting
+# #random sampling
+train_indices <- sample(nrow(stations_ols_clean_V2), 0.8 * nrow(stations_ols_clean_V2))
+
+train_data <- stations_ols_clean_V2[train_indices, ]
+
+test_data <- stations_ols_clean_V2[-train_indices, ]
+
+train_data <- train_data %>%dplyr::select(trips_station,trips_strava,crr_cmm,accidents,vmax,dist_10_green,dist_2_resid, dist_sve,mix_value,PopDens,u80_perc,swiss_sep_D,slope,season_spring,season_summer,season_winter, year_2022)
+
+  
+  # Fit the Lasso model using the best lambda value
+  lasso_model <- glmregNB(trips_station ~ trips_strava + crr_cmm  + accidents+ vmax+ dist_10_green + dist_2_resid  + dist_sve + mix_value  + PopDens  + u80_perc+ swiss_sep_D + slope + season_spring + season_summer + season_winter + year_2022, data = train_data, alpha = 1, lambda = lambda_median_random)
+  
+
+# Extract the selected variables with non-zero coefficients
+selected_vars_random <- names(coef(lasso_model))[coef(lasso_model) != 0][-1]  # Exclude the intercept
+
+
+
+  # Mark the selected variables in the stability matrix
+  for (j in 1:length(selected_vars_random)) {
+    var_index_random <- match(selected_vars_random[j], colnames(train_data %>% dplyr::select(-trips_station)))
+    stability_matrix_random[var_index_random, i] <- 1
+  }
+}
+
+# Calculate the stability scores for each variable
+stability_scores_random <- rowMeans(stability_matrix_random)
+stability_scores_random
+
+stability_matrix_random[,100]
+coef(lasso_model)
+```
+
+#merge dataframes
+```{r}
+
+
+stability_scores_final <- data.frame(row.names = names(coef(lasso_model)[-1]))
+
+
+# Add the stability scores for selected_vars as row 1
+stability_scores_final[,1 ] <- stability_scores
+
+# Add the stability_scores_random as row 2
+stability_scores_final[,2 ] <- stability_scores_random
+
+colnames(stability_scores_final) <- c("Station Sampling", "Random Sampling")
+
+# stability_scores_final
+# dev.copy(png,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\stability_scores.png")
+# dev.off()
+# 
+# 
+# plot(trips_station ~ trips_strava, data = stations_ols_clean, col = "dodgerblue", pch = 20, cex = 1.5, main = "Trips Distribution: Strava vs. Stations")  
+# dev.copy(tiff,"C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\plots\\Trips_Stations_vs_Strava.tiff")
+# dev.off()
+
+```
+
+
+

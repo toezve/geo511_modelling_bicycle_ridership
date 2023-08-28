@@ -1,0 +1,50 @@
+---
+title: "study area plot"
+output: html_document
+date: "2022-12-06"
+---
+
+
+```{r}
+library(tidyverse)
+library(sp)
+library(sf)
+library(tmap)
+library(leaflet)
+library(ggplot2)
+# library(OpenStreetMap)
+
+```
+
+Stations must be loaded in the counting stations.rmd
+
+
+# polygon perimeter
+
+```{r}
+polygon <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\polygons.shp")
+
+bbox_final <- st_bbox(av_network_corrected_0510) %>% st_as_sfc()
+bbox_final_1 <- st_union(av_network_corrected_0510)%>% st_convex_hull()
+st_write(bbox_final, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\bbox_final_2.shp")
+st_write(bbox_final_1, "C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\bbox_final_3.shp")
+
+
+```
+
+
+
+
+#plot in tmap viewer
+```{r}
+
+tmap_mode("view")
+tm_basemap(leaflet::providers$OpenStreetMap.CH)+
+tm_shape(rok) +
+  tm_polygons(col = "URBANITAET", alpha = 0.7)+
+  tm_shape(stations_stadt) +tm_dots()+
+  tm_shape(stations_kt) +tm_dots() 
+
+
+```
+

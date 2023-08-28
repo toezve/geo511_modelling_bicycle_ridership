@@ -1,0 +1,50 @@
+---
+title: "unfallstat_bfs"
+output: html_document
+date: "2023-05-01"
+---
+
+```{r}
+
+library(tidyverse)
+library(sf)
+library(sp)
+library(tmap)
+library(leaflet)
+library(lubridate)
+library(readxl)
+library(stringr)
+
+
+
+```
+
+
+
+
+
+```{r}
+
+unfall_bfs_raw <- st_read("C:\\Users\\t97oe\\OneDrive - Universität Zürich UZH\\Dokumente\\uzh Master\\Geo 511 Thesis\\data\\geodata\\unfallstat\\KTZH_00000718_00001783.csv")
+
+unfall_bfs <- unfall_bfs_raw %>% select(1,2,3,7,8,13,16,20,21,23,25,26)
+unfall_bfs <- unfall_bfs %>% filter(AccidentInvolvingBicycle == TRUE)
+unfall_bfs <- st_as_sf(unfall_bfs, coords = c("AccidentLocation_CHLV95_E","AccidentLocation_CHLV95_N"), crs = 2056)
+unfall_bfs <- st_crop(unfall_bfs, st_bbox(polygon))
+
+AVnetz_counts <- inner_join(AVnetz, as.data.frame(avnetz_ref), by= c("OBJECTID" = "OBJECTI"))
+AVnetz_counts <- AVnetz_counts %>% select(1,2,3,19,20,21,22,23,25)
+
+AVnetz_counts_b <- AVnetz_counts %>% st_buffer(dist = 40, endCapStyle = "SQUARE")
+avnetz_counts_J <- st_join(AVnetz_counts_b, unfall_bfs, join = st_intersects)
+
+avnetz_accid <- avnetz_counts_J %>% group_by(OBJECTID) %>%
+  mutate(accidents = n()) 
+avnetz_accid <- avnetz_accid %>% select(1,2,3,5,6,7,8,19,20)
+avnetz_accid <- avnetz_accid %>% subset(!duplicated(avnetz_accid))
+
+
+
+
+```
+
